@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      source-sha:
+        description: Exact commit resolved by the publishing workflow
+        required: true
+        type: string
+      release-mode:
+        description: alpha for prerelease tags or manual dispatch; stable for the main tag path
+        required: true
+        type: string
+      release-tag:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ['3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: windows-latest
+            python: '3.13'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs['source-sha'] || github.sha }}
+          persist-credentials: false
+      - name: Verify the immutable source commit
+        env:
+          SOURCE_SHA: ${{ inputs['source-sha'] || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Create and activate virtual environment
+        run: |
+          python -m venv .venv
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "$GITHUB_WORKSPACE/.venv/Scripts" >> "$GITHUB_PATH"
+          else
+            echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Prepare the exact release metadata before testing
+        if: inputs['release-mode'] != ''
+        env:
+          RELEASE_MODE: ${{ inputs['release-mode'] }}
+          RELEASE_TAG: ${{ inputs['release-tag'] }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+        run: >-
+          python tools/release.py --mode "$RELEASE_MODE"
+          --tag "$RELEASE_TAG" --run-number "$RELEASE_RUN_NUMBER"
+      - name: Install (accepts published Nagents 0.6 alphas)
+        run: python -m pip install --pre -e '.[dev]'
+      - run: pre-commit run --all-files
+      - run: python -m pytest
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Install and verify built wheel
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -m pip check
+          python -m pytest
+          python -c "import nagents_channel_telegram_bot as p; assert 'site-packages' in p.__file__"

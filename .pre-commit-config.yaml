@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-added-large-files
+      - id: check-merge-conflict
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (active virtual environment)
+        entry: python -m ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format (active virtual environment)
+        entry: python -m ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: strict mypy (active virtual environment)
+        entry: python -m mypy
+        language: system
+        pass_filenames: false
+        always_run: true

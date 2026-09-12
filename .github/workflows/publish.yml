@@ -1,0 +1,171 @@
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      feature-ref:
+        description: Feature branch, ref, or full commit SHA to test and publish as an alpha
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      mode: ${{ steps.source.outputs.mode }}
+      tag: ${{ steps.source.outputs.tag }}
+    steps:
+      - name: Resolve the requested source once
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs['feature-ref'] || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin source and enforce the release path
+        id: source
+        env:
+          TRIGGER: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          EVENT_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          if [ "$TRIGGER" = "workflow_dispatch" ]; then
+            # Dispatch is available after this workflow is reviewed and merged.
+            # Select package source with feature-ref, keeping the workflow on main.
+            test "$WORKFLOW_REF" = "refs/heads/main"
+            mode=alpha
+            tag=''
+          else
+            test "$TRIGGER" = "push"
+            test "$WORKFLOW_REF" = "refs/tags/$RELEASE_TAG"
+            test "$source_sha" = "$EVENT_SHA"
+            stable_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+            alpha_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)a[1-9][0-9]*$'
+            if [[ "$RELEASE_TAG" =~ $alpha_tag ]]; then
+              # Bootstrap from the draft PR's feature commit: push-tag workflows
+              # can run before their definition exists on the default branch.
+              mode=alpha
+            elif [[ "$RELEASE_TAG" =~ $stable_tag ]]; then
+              # Stable tags must belong to the reviewed integration history.
+              git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main
+              mode=stable
+            else
+              echo "Expected a canonical vX.Y.Z stable tag or vX.Y.ZaN alpha tag" >&2
+              exit 1
+            fi
+            tag="$RELEASE_TAG"
+          fi
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release source: $source_sha ($mode)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$tag" ]; then
+            echo "Release tag: $tag" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      source-sha: ${{ needs.resolve.outputs.sha }}
+      release-mode: ${{ needs.resolve.outputs.mode }}
+      release-tag: ${{ needs.resolve.outputs.tag }}
+
+  build:
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - name: Verify the tested source commit
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Create virtual environment
+        run: |
+          python -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      - name: Prepare the same release metadata tested by CI
+        env:
+          RELEASE_MODE: ${{ needs.resolve.outputs.mode }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+        run: >-
+          python tools/release.py --mode "$RELEASE_MODE"
+          --tag "$RELEASE_TAG" --run-number "$RELEASE_RUN_NUMBER"
+      - run: python -m pip install --pre -e '.[dev]'
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - name: Test the actual release wheel
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -m pip check
+          python -m pytest
+          python -c "import nagents_channel_telegram_bot as p; assert 'site-packages' in p.__file__"
+      - name: Verify the installed artifact's release policy
+        env:
+          RELEASE_MODE: ${{ needs.resolve.outputs.mode }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from importlib.metadata import version
+          from pathlib import Path
+
+          actual = version("nagents-channel-telegram-bot")
+          expected = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if actual != expected:
+              raise SystemExit("Installed wheel does not match the tested release metadata")
+          stable = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+          if os.environ["RELEASE_MODE"] == "alpha":
+              if os.environ["RELEASE_TAG"]:
+                  valid = (
+                      re.fullmatch(stable + r"a[1-9][0-9]*", actual) is not None
+                      and os.environ["RELEASE_TAG"] == f"v{actual}"
+                  )
+              else:
+                  pattern = stable + "a" + re.escape(os.environ["RELEASE_RUN_NUMBER"])
+                  valid = re.fullmatch(pattern, actual) is not None
+          else:
+              valid = re.fullmatch(stable, actual) is not None and os.environ["RELEASE_TAG"] == f"v{actual}"
+          if not valid:
+              raise SystemExit("Release artifact violates the alpha/stable publishing policy")
+          print(f"Verified release artifact: {actual}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions-${{ needs.resolve.outputs.sha }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nagents-channel-telegram-bot
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions-${{ needs.resolve.outputs.sha }}
+          path: dist/
+      - name: Publish the tested artifacts with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
