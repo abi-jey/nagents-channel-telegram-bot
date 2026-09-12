@@ -30,6 +30,10 @@ _PROVENANCE_FIELDS = (
     "media_group_id",
     "author_signature",
     "forward_origin",
+    "forward_date",
+    "forward_from",
+    "forward_from_chat",
+    "forward_sender_name",
     "external_reply",
     "quote",
     "is_automatic_forward",
@@ -43,6 +47,25 @@ def _string(value: ChannelValue) -> str:
 def _photo_area(value: ChannelValue) -> int:
     photo = object_value(value)
     return integer(photo.get("width")) * integer(photo.get("height"))
+
+
+def _entities(value: ChannelValue) -> ChannelValue:
+    if not isinstance(value, list):
+        return None
+    result: list[ChannelValue] = []
+    for entity in value:
+        if not isinstance(entity, dict):
+            result.append(None)
+            continue
+        kind, offset, length = entity.get("type"), entity.get("offset"), entity.get("length")
+        result.append(
+            {
+                "type": kind if isinstance(kind, str) else None,
+                "offset": offset if type(offset) is int else None,
+                "length": length if type(length) is int else None,
+            }
+        )
+    return result
 
 
 def _attachments(message: dict[str, ChannelValue]) -> tuple[tuple[ChannelAttachment, ...], list[ChannelValue]]:
@@ -146,6 +169,12 @@ def map_update(
         reply_to = str(telegram_id)
     else:
         content = _string(message.get("text")) or _string(message.get("caption"))
+        metadata["text_source"] = "text" if _string(message.get("text")) else "caption"
+        for field in ("entities", "caption_entities"):
+            if field in message:
+                # Keep only entity type/range, never arbitrary URL/user/credential fields.
+                # Retain malformed entries as null so command parsing fails closed.
+                metadata[field] = _entities(message[field])
         attachments, files = _attachments(message)
         if not content and not attachments:
             return ()

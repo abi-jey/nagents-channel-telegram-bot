@@ -18,6 +18,7 @@ from nagents_channel_telegram_bot._validation import object_value
 
 TOKEN = "123456:OFFLINE_TEST_TOKEN"
 BOT_ID = 123456
+BOT_USERNAME = "offline_bot"
 ResponseFactory = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
@@ -73,11 +74,11 @@ class TelegramServer:
             response = self.responses[method].popleft()
             return await response(request) if callable(response) else response
         if method == "getMe":
-            return ok({"id": BOT_ID, "is_bot": True, "first_name": "Offline bot"})
+            return ok({"id": BOT_ID, "is_bot": True, "first_name": "Offline bot", "username": BOT_USERNAME})
         if method == "getUpdates":
             await self.idle.wait()
             return ok([])
-        if method in ("answerCallbackQuery", "deleteMessage"):
+        if method in ("answerCallbackQuery", "deleteMessage", "sendChatAction"):
             return ok(True)
         if method in ("sendMessage", "editMessageText"):
             chat_id = payload["chat_id"]

@@ -43,7 +43,7 @@ def test_installed_plugin_is_offline(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     "config",
     [
-        {"token": TOKEN},
+        {"token": TOKEN, "token_env": "TELEGRAM_BOT_TOKEN"},
         {"base_url": "http://localhost"},
         {"unknown": True},
         {"token_env": ""},
@@ -130,7 +130,16 @@ async def test_requires_open_and_idempotent_close() -> None:
     await bot.close()
 
 
-@pytest.mark.parametrize("bad_me", [{"id": True, "is_bot": True}, {"id": 1, "is_bot": False}, []])
+@pytest.mark.parametrize(
+    "bad_me",
+    [
+        {"id": True, "is_bot": True},
+        {"id": 1, "is_bot": False},
+        [],
+        {"id": 1, "is_bot": True, "username": True},
+        {"id": 1, "is_bot": True, "username": "invalid/username"},
+    ],
+)
 async def test_failed_handshake_closes_owned_session(
     server: TelegramServer, monkeypatch: pytest.MonkeyPatch, bad_me: ChannelValue
 ) -> None:

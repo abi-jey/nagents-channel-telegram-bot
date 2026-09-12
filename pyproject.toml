@@ -35,7 +35,7 @@ dev = [
 ]
 
 [project.entry-points."nagents.channels"]
-telegram-bot = "nagents_channel_telegram_bot:TelegramBot.from_config"
+telegram-bot = "nagents_channel_telegram_bot:plugin"
 
 [project.urls]
 Repository = "https://github.com/abi-jey/nagents-channel-telegram-bot"

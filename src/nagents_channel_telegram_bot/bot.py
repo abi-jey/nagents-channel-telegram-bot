@@ -1,5 +1,6 @@
 """Public Nagents Channel implementation for a single Telegram bot consumer."""
 
+import asyncio
 import os
 import re
 from collections.abc import Sequence
@@ -7,12 +8,18 @@ from typing import Self
 
 from nagents.channels import Channel
 from nagents.channels import ChannelAction
+from nagents.channels import ChannelActivity
+from nagents.channels import ChannelCommand
 from nagents.channels import ChannelDelivery
 from nagents.channels import ChannelError
+from nagents.channels import ChannelMessage
 from nagents.channels import ChannelReceiver
 from nagents.channels import ChannelSend
 from nagents.channels import ChannelValue
 
+from ._activity import Typing
+from ._activity import finish_cleanup
+from ._commands import parse_command
 from ._mapping import UPDATE_TYPES
 from ._mapping import map_update
 from ._transport import Transport
@@ -24,7 +31,7 @@ from ._validation import text
 
 
 class TelegramBot(Channel):
-    """Long-poll Telegram into the Agent listener's single shared session.
+    """Long-poll Telegram into a host; session routing is the host's policy.
 
     Construction is offline. The runtime owns cancellation of ``listen`` and
     calls ``close`` after that task stops. Each attached channel needs a distinct,
@@ -32,7 +39,7 @@ class TelegramBot(Channel):
     """
 
     description = "Telegram bot: receive chat events; explicitly send, edit, or delete plain-text messages."
-    capabilities = ("receive", "send_text")
+    capabilities = ("receive", "send_text", "commands", "typing")
     actions = (
         ChannelAction(
             name="edit_message",
@@ -84,23 +91,36 @@ class TelegramBot(Channel):
         self._allowed_chats = frozenset(identifier(chat, "allowed_chat_ids entry") for chat in allowed_chat_ids)
         self._poll_timeout = poll_timeout
         self._transport = Transport(token, base_origin(base_url))
+        self._typing = Typing(self._transport)
+        self._lifecycle_lock = asyncio.Lock()
         self._bot_id = 0
+        self._bot_username = ""
         self._offset = 0
         self._opened = False
         self._opening = False
+        self._closing = 0
         self._listening = False
 
     @classmethod
     def from_config(cls, config: dict[str, ChannelValue]) -> Self:
-        """Entry-point factory. Credentials are read only from the named environment variable."""
-        if not isinstance(config, dict) or set(config) - {"token_env", "name", "allowed_chat_ids", "poll_timeout"}:
+        """Accept a private host-injected token or an environment reference, never both."""
+        keys = {"token", "token_env", "name", "allowed_chat_ids", "poll_timeout"}
+        if not isinstance(config, dict) or set(config) - keys:
             raise ChannelError("Unsupported Telegram configuration keys")
-        token_env = config.get("token_env", "TELEGRAM_BOT_TOKEN")
+        if "token" in config and "token_env" in config:
+            raise ChannelError("Provide token or token_env, not both")
+        if "token" in config:
+            token = config["token"]
+            if not isinstance(token, str):
+                raise ChannelError("token must be a string")
+        else:
+            token_env = config.get("token_env", "TELEGRAM_BOT_TOKEN")
+            if not isinstance(token_env, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env) is None:
+                raise ChannelError("token_env must be an environment variable name")
+            token = os.environ.get(token_env, "")
         name = config.get("name", "telegram")
         allowed = config.get("allowed_chat_ids", [])
         timeout = config.get("poll_timeout", 30)
-        if not isinstance(token_env, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env) is None:
-            raise ChannelError("token_env must be an environment variable name")
         if not isinstance(name, str):
             raise ChannelError("name must be a string")
         if not isinstance(allowed, list) or any(not isinstance(chat, str) for chat in allowed):
@@ -108,26 +128,59 @@ class TelegramBot(Channel):
         allowed_ids = [identifier(chat, "allowed_chat_ids entry") for chat in allowed]
         if type(timeout) is not int:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
-        return cls(os.environ.get(token_env, ""), name=name, allowed_chat_ids=allowed_ids, poll_timeout=timeout)
+        return cls(token, name=name, allowed_chat_ids=allowed_ids, poll_timeout=timeout)
 
     async def open(self) -> None:
+        if self._closing:
+            raise ChannelError("Telegram channel is closing")
         if self._opening:
             raise ChannelError("Telegram channel is already opening")
         if self._opened:
             return
         self._opening = True
         try:
-            self._transport.open()
-            me = object_value(await self._transport.request("getMe", {}))
-            self._bot_id = integer(me.get("id"))
-            if me.get("is_bot") is not True:
-                raise ChannelError("Telegram getMe did not identify a bot")
-            self._opened = True
-        except BaseException:
-            await self._transport.close()
-            raise
+            async with self._lifecycle_lock:
+                try:
+                    if self._closing:
+                        raise ChannelError("Telegram channel is closing")
+                    self._transport.open()
+                    me = object_value(await self._transport.request("getMe", {}))
+                    self._bot_id = integer(me.get("id"))
+                    if me.get("is_bot") is not True:
+                        raise ChannelError("Telegram getMe did not identify a bot")
+                    username = me.get("username", "")
+                    if not isinstance(username, str) or (
+                        username and not re.fullmatch(r"[A-Za-z0-9_]{1,32}", username)
+                    ):
+                        raise ChannelError("Telegram getMe returned an invalid bot username")
+                    self._bot_username = username
+                    if self._closing:
+                        raise ChannelError("Telegram channel is closing")
+                    self._typing.open()
+                    self._opened = True
+                except BaseException:
+                    await finish_cleanup(self._transport.close())
+                    raise
         finally:
             self._opening = False
+
+    def command(self, message: ChannelMessage) -> ChannelCommand | None:
+        """Recognize an explicit new-message command; the host owns its execution."""
+        return parse_command(message, self._bot_username)
+
+    async def activity(self, event: ChannelActivity) -> None:
+        """Best-effort typing, with local stop and session-scoped ownership."""
+        chat = identifier(event.conversation_id, "conversation_id")
+        if not isinstance(event.thread_id, str):
+            raise ChannelError("thread_id must be a decimal ID string or an empty string")
+        thread = identifier(event.thread_id, "thread_id", positive=True) if event.thread_id else ""
+        if type(event.active) is not bool:
+            raise ChannelError("active must be a boolean")
+        if not isinstance(event.session_id, str):
+            raise ChannelError("session_id must be a string")
+        if self._allowed_chats and chat not in self._allowed_chats:
+            return
+        await self._typing.update((chat, thread), active=event.active, session_id=event.session_id)
 
     def _require_open(self) -> None:
         if not self._opened:
@@ -250,6 +303,18 @@ class TelegramBot(Channel):
         return {"message_id": message_id, "destination": destination, "ok": True}
 
     async def close(self) -> None:
-        """Release HTTP resources after the runtime cancels and awaits its listen task."""
+        """Stop all typing and release HTTP after the host stops its listen task."""
+        self._closing += 1
         self._opened = False
-        await self._transport.close()
+        self._typing.disable()
+        try:
+            await finish_cleanup(self._close_resources())
+        finally:
+            self._closing -= 1
+
+    async def _close_resources(self) -> None:
+        async with self._lifecycle_lock:
+            try:
+                await self._typing.close()
+            finally:
+                await self._transport.close()

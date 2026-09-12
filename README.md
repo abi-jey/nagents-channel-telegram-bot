@@ -3,9 +3,16 @@
 An installable, typed Telegram Bot API connector for the **public Nagents Channel
 API**, using direct `aiohttp` requests and long polling. Python 3.11+; MIT licensed.
 
-All admitted Telegram events feed **one shared Agent session**, even across chats,
-topics, and other attached channels. Chat IDs describe provenance and delivery
-destinations; they do not create separate agents or select sessions.
+Session routing belongs to the application hosting the connector:
+
+- Standalone **`Agent.listen(session_id=...)`** feeds all attached channels and
+  Telegram chats into that one shared Agent session.
+- The **web channel host** defaults each `(connection name, chat ID)` to its own
+  persisted root session and supports explicit reattachment to an existing one.
+  Threads remain routing metadata, not separate sessions.
+
+The connector supplies events, discovery metadata, command parsing and typing
+indicators. It does not access a session database or choose bindings itself.
 
 ## Install
 
@@ -26,9 +33,10 @@ python -m pip install --pre 'nagents-channel-telegram-bot==0.1.0aN'
 ```
 
 The core alpha must be published before dependency-resolving CI or test installs
-can succeed. Alpha testing still uses one shared Agent session across all events.
+can succeed. Web integration needs a Nagents build exposing `ChannelPlugin`,
+`ChannelCommand`, and `ChannelActivity`, as well as the web channel host.
 
-## Create a bot and start listening
+## Create a bot and start a standalone shared-session listener
 
 1. In Telegram, create a bot using [@BotFather](https://t.me/BotFather) and `/newbot`.
 2. Set `TELEGRAM_BOT_TOKEN` in your application's environment. Keep it out of
@@ -97,17 +105,19 @@ if __name__ == "__main__":
 
 Use a stable session ID, channel name, bot identity, and persistent session database
 across restarts. Each connector attached to the Agent must have a unique `name`;
-give a second bot a different name. Because history is shared, choose admitted
+give a second bot a different name. In this standalone example history is shared, so choose admitted
 chats with that shared identity in mind. `allowed_chat_ids` is an **inbound
 admission filter**, not an outbound authorization policy.
 
 The Agent runtime opens the channel, owns the polling task, and cancels/awaits it
 before closing resources. Ctrl+C cancels the example's listener. If using the
 Channel directly, follow the same order: `open()`, start `listen(receive)`, cancel
-and await that task, then `close()` in `finally`. `close()` releases the owned HTTP
-session; it does not cancel someone else's task. Failed or cancelled `open()` also
-closes the HTTP session. Repeated `open()`/`close()` calls are supported; lifecycle
-operations should be serialized by the caller.
+and await that task, then `close()` in `finally`. `close()` stops and joins owned
+typing keepalives and releases the HTTP session; the polling task belongs to its
+caller. Cleanup is shielded against cancellation and joined before cancellation
+propagates. Failed or cancelled `open()` also closes the HTTP session. Repeated
+`open()`/`close()` calls are supported. Lifecycle operations are serialized;
+opening during shutdown fails, and activity cannot start new workers while closing.
 
 ## Explicit discovery and configuration
 
@@ -115,7 +125,7 @@ The distribution registers this entry point:
 
 ```toml
 [project.entry-points."nagents.channels"]
-telegram-bot = "nagents_channel_telegram_bot:TelegramBot.from_config"
+telegram-bot = "nagents_channel_telegram_bot:plugin"
 ```
 
 ```python
@@ -129,24 +139,163 @@ channel = load_channel("telegram-bot", {
 })
 ```
 
+`nagents_channel_telegram_bot.plugin` is a callable **`ChannelPlugin`** descriptor:
+its display name is `Telegram Bot`, its `factory` is `TelegramBot.from_config`, and
+its `config_schema` is a flat JSON object schema. Hosts can inspect this metadata
+without connecting to Telegram, then call the object with configuration:
+
+```python
+from nagents_channel_telegram_bot import plugin
+
+print(plugin.name)
+print(plugin.config_schema)  # Static schema only; contains no saved credentials.
+channel = plugin({"token_env": "TELEGRAM_BOT_TOKEN", "name": "telegram"})
+```
+
 `from_config(dict[str, ChannelValue])` supports **only** these keys and rejects
 unknown keys and incorrect types:
 
 | Key | Default | Validation |
 | --- | --- | --- |
-| `token_env` | `TELEGRAM_BOT_TOKEN` | Environment variable name; its value must contain a bot token |
+| `token` | Omitted | Bot token string, marked **`writeOnly: true`** in the schema for private host injection |
+| `token_env` | `TELEGRAM_BOT_TOKEN` when neither credential key is provided | Environment variable name; its value must contain a bot token |
 | `name` | `telegram` | 1–64 ASCII letters/digits/`_`/`.`/`-`, starting with a letter or underscore |
 | `allowed_chat_ids` | `[]` | List of nonzero, canonical decimal ID **strings**; empty means all |
 | `poll_timeout` | `30` | Integer 1–50 seconds; booleans rejected |
 
-There is no direct-token configuration key. Direct Python construction is also
-available: `TelegramBot(token, *, name="telegram", allowed_chat_ids=(),
+Provide **either `token` or `token_env`**, never both. Ambiguity is rejected by key
+presence even when one value is empty. An explicitly empty/malformed token fails
+validation instead of falling back to the environment. Omit both keys to use the
+default environment variable. `token_env` deliberately has no schema default, so
+a generated form will not inject it alongside a private token. The optional
+schema `name` field is read-only for management clients: the web host injects its
+connection ID. Constructors/factories never retain the configuration dictionary
+or put credential values into errors or descriptor metadata.
+
+Direct Python construction remains available:
+`TelegramBot(token, *, name="telegram", allowed_chat_ids=(),
 poll_timeout=30, base_url="https://api.telegram.org")`. For the constructor only,
 `allowed_chat_ids` accepts a list or tuple. The optional `base_url` is a **trusted
 operator-configured origin** (no path, credentials, query, or fragment), never
 model input. HTTPS is required except for HTTP loopback/localhost test servers.
 It changes where the token is sent; use only dummy tokens in local tests. Imports
 and constructors make no network requests. `open()` authenticates with `getMe`.
+
+## Web-host installation and routing
+
+This package implements the **connector side** of the web integration contract.
+The channel-management UI, credential storage and session routing are provided by
+the Nagents host; availability in a deployed application depends on that host's
+version. Installing this package alone does not deploy or enable a web UI.
+
+For a host that implements channel management:
+
+1. Install the connector through the application's existing approved shell, using
+   the host-provided persistent `plugin_path` shown in its channel catalog. With
+   compatible Nagents and aiohttp already installed in the host environment:
+
+   ```sh
+   python -m pip install --pre --no-deps --target "<plugin_path shown by the host>" nagents-channel-telegram-bot
+   ```
+
+   The destination is operator/host configuration, not an inbound Telegram value.
+2. Use the management UI's **Refresh** action. The installed `telegram-bot` entry
+   point supplies the descriptor and schema for the plugin picker/configuration
+   form. Upgrading already imported code/dependencies may require a host restart.
+3. Configure a connection with **either** the private `token` secret field **or**
+   a `token_env` reference. Omit the unused key. The host stores secrets separately
+   from public config, outside the workspace, and does not return saved values in
+   its management responses. The descriptor's `writeOnly` flag identifies `token`
+   as a secret; no credential value is embedded in the schema.
+4. Set the optional chat admission list, poll timeout, enabled state and host's
+   main-session selection. The connection ID becomes the connector's stable
+   `name`. Keep one polling consumer per bot token across all host instances.
+
+The web host binds each `(name, conversation_id)` to a separate persisted session
+by default and serializes model execution against its shared Harness. A chat can
+reattach to another session using the commands below. Two chats only share history
+when the host binds them to the same session. `thread_id` remains the Telegram
+topic target inside that chat. `Agent.listen(session_id=...)` remains available
+for applications that deliberately want the single shared identity shown above.
+
+## Host command parsing
+
+`channel.command(message)` is synchronous and performs no I/O. It returns a
+`ChannelCommand` for the host to interpret, or `None` for ordinary model input:
+
+| Telegram input | Parsed command | Arguments passed to the host |
+| --- | --- | --- |
+| `/sessions` | `sessions` | Empty |
+| `/session` | `session` | Empty (host reports the current binding) |
+| `/session ID` | `session` | The supplied ID |
+| `/session main`, `/session default`, `/session new` | `session` | The supplied host selector |
+| `/new` or `/new A title` | `new` | Empty or the trimmed title |
+
+The host owns listing, creating, validating and reattaching sessions, including
+the meaning of `main`, `default`, and `new`. The connector never queries storage,
+changes a binding, or sends a command response itself. A standalone application
+can use this hook explicitly; parsing alone does not change its Agent session.
+
+Parsing is deliberately limited to **new `message` updates** with text at offset
+zero. Edits, channel posts, captions, callbacks and forwarded messages are not host
+commands. Recognized names are lowercase, followed by the end of the token or
+ASCII whitespace. `/sessions` takes no arguments; `/session` and `/new` preserve
+their argument text apart from surrounding whitespace. Unrecognized slash text
+returns `None`.
+
+When `entities` is present, parsing requires one matching `bot_command` entity at
+UTF-16 offset zero, with the exact command-token length and valid entity ranges.
+Empty/malformed annotations or other formatting at the token's start prevent
+recognition. If entities are **absent entirely**, the same strict literal token
+parser is used as a fallback. `/session@your_bot` and the other `@bot` forms are
+accepted only when the suffix matches the username learned from `getMe`
+(case-insensitively). If that optional username was not returned, addressed
+commands stay ordinary input. Telegram entity metadata retains only `type`,
+`offset`, and `length`; arbitrary entity fields are not copied.
+
+## Host activity and typing
+
+After opening the channel, the host can signal activity independently of text:
+
+```python
+from nagents.channels import ChannelActivity
+
+await channel.activity(ChannelActivity(
+    conversation_id="-1001234567890", active=True,
+    thread_id="42", session_id="root-session-a",
+))
+# When that session finishes or is cancelled:
+await channel.activity(ChannelActivity(
+    conversation_id="-1001234567890", active=False,
+    thread_id="42", session_id="root-session-a",
+))
+```
+
+- The first `sendChatAction(action="typing")` is attempted immediately, with a
+  five-second HTTP timeout, then repeated after a four-second interval. No text
+  reply or model tool call is generated. A known rate limit defers the first
+  attempt as well; starting activity does not wait through that cooldown.
+- One worker owns each `(conversation_id, thread_id)`, with at most **64 workers
+  per connector**. Additional targets beyond that limit are ignored rather than
+  queued. Repeated starts for the same key/session are idempotent.
+- Starting the same target for a different `session_id` cancels/joins its previous
+  worker. A late stop for the old session cannot stop the new owner's activity.
+  Supply the same session ID on start/stop; empty IDs are their own distinct owner.
+- Remote errors are best-effort and do not fail model execution or log exception
+  bodies/URLs. Each period attempts the HTTP operation once. A Telegram
+  `retry_after` delays subsequent indicators across this bot's active targets and
+  survives ownership changes; the cancellable cooldown is not shortened to retry
+  early. Other transient/uncertain failures wait for the next normal interval.
+- Stops cancel/join local work. There is no fake cancel HTTP action: Telegram's
+  existing icon expires within five seconds or disappears when a bot message
+  arrives. Telegram does not support this method for channel chats or channel
+  direct-message chats; those errors are handled as best-effort failures.
+- Chat/thread IDs and activity field types are validated before HTTP. The chat
+  admission list also filters indicators. Activity while closed/closing is a
+  no-op. Cancelling a new start while its first request is in flight cleans up its
+  worker; cancelling a duplicate start does not cancel the original owner.
+- `close()` stops all workers and joins shielded cleanup before releasing HTTP
+  resources. The caller still owns cancellation of its polling/listen task.
 
 ## Incoming events and acknowledgement
 
@@ -220,8 +369,8 @@ and its retention policy configured for your application.
 
 Nagents exposes `channel_send` and `channel_action` to the model for attached
 channels. The local `on_event` observer and final assistant response do not send
-anything. The connector itself advertises `receive` and `send_text`, plus the
-two action schemas below. An application can also call the Channel directly:
+anything. The connector advertises `receive`, `send_text`, `commands`, and `typing`,
+plus the two action schemas below. An application can also call the Channel directly:
 
 ```python
 from nagents.channels import ChannelSend
@@ -400,3 +549,5 @@ environment `pypi`. No API key or `.pypirc` is needed.
 - [sendMessage](https://core.telegram.org/bots/api#sendmessage)
 - [editMessageText](https://core.telegram.org/bots/api#editmessagetext)
 - [deleteMessage](https://core.telegram.org/bots/api#deletemessage)
+- [sendChatAction](https://core.telegram.org/bots/api#sendchataction)
+- [MessageEntity](https://core.telegram.org/bots/api#messageentity)

@@ -2,6 +2,12 @@
 
 ## 0.1.0
 
+- Callable `ChannelPlugin` discovery metadata, a flat secret-aware configuration
+  schema, and private direct-token or environment-reference factory configuration.
+- Pure `/sessions`, `/session`, and `/new` host-command parsing with Telegram
+  entity/recipient validation and preserved reply/forward provenance.
+- Bounded, session-owned typing keepalives with rate-limit cooldowns and shielded
+  lifecycle cleanup. Session selection remains the standalone/web host's policy.
 - Initial standalone connector for the Nagents 0.6 public Channel API, including
   core prereleases (`nagents>=0.6.0a1,<0.7`).
 - Bounded Telegram long polling, durable-admission offset handling, callback
