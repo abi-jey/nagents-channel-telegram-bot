@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Self
 
 from nagents.channels import Channel
@@ -28,6 +29,7 @@ from ._validation import identifier
 from ._validation import integer
 from ._validation import object_value
 from ._validation import text
+from ._validation import username
 
 
 class TelegramBot(Channel):
@@ -76,6 +78,9 @@ class TelegramBot(Channel):
         *,
         name: str = "telegram",
         allowed_chat_ids: Sequence[str] = (),
+        allowed_user_ids: Sequence[str] = (),
+        allowed_usernames: Sequence[str] = (),
+        private_chats_only: bool = False,
         poll_timeout: int = 30,
         base_url: str = "https://api.telegram.org",
     ) -> None:
@@ -85,10 +90,21 @@ class TelegramBot(Channel):
             raise ChannelError("name must match [A-Za-z_][A-Za-z0-9_.-]{0,63}")
         if not isinstance(allowed_chat_ids, (list, tuple)):
             raise ChannelError("allowed_chat_ids must be a list or tuple of decimal chat ID strings")
+        if not isinstance(allowed_user_ids, (list, tuple)):
+            raise ChannelError("allowed_user_ids must be a list or tuple of positive decimal user ID strings")
+        if not isinstance(allowed_usernames, (list, tuple)):
+            raise ChannelError("allowed_usernames must be a list or tuple of username strings")
+        if type(private_chats_only) is not bool:
+            raise ChannelError("private_chats_only must be a boolean")
         if type(poll_timeout) is not int or not 1 <= poll_timeout <= 50:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
         self.name = name
         self._allowed_chats = frozenset(identifier(chat, "allowed_chat_ids entry") for chat in allowed_chat_ids)
+        self._allowed_users = frozenset(
+            identifier(user, "allowed_user_ids entry", positive=True) for user in allowed_user_ids
+        )
+        self._allowed_usernames = frozenset(username(user) for user in allowed_usernames)
+        self._private_chats_only = private_chats_only
         self._poll_timeout = poll_timeout
         self._transport = Transport(token, base_origin(base_url))
         self._typing = Typing(self._transport)
@@ -104,7 +120,16 @@ class TelegramBot(Channel):
     @classmethod
     def from_config(cls, config: dict[str, ChannelValue]) -> Self:
         """Accept a private host-injected token or an environment reference, never both."""
-        keys = {"token", "token_env", "name", "allowed_chat_ids", "poll_timeout"}
+        keys = {
+            "token",
+            "token_env",
+            "name",
+            "allowed_chat_ids",
+            "allowed_user_ids",
+            "allowed_usernames",
+            "private_chats_only",
+            "poll_timeout",
+        }
         if not isinstance(config, dict) or set(config) - keys:
             raise ChannelError("Unsupported Telegram configuration keys")
         if "token" in config and "token_env" in config:
@@ -120,15 +145,34 @@ class TelegramBot(Channel):
             token = os.environ.get(token_env, "")
         name = config.get("name", "telegram")
         allowed = config.get("allowed_chat_ids", [])
+        users = config.get("allowed_user_ids", [])
+        usernames = config.get("allowed_usernames", [])
+        private = config.get("private_chats_only", False)
         timeout = config.get("poll_timeout", 30)
         if not isinstance(name, str):
             raise ChannelError("name must be a string")
         if not isinstance(allowed, list) or any(not isinstance(chat, str) for chat in allowed):
             raise ChannelError("allowed_chat_ids must be a list of decimal chat ID strings")
         allowed_ids = [identifier(chat, "allowed_chat_ids entry") for chat in allowed]
+        if not isinstance(users, list):
+            raise ChannelError("allowed_user_ids must be a list of positive decimal user ID strings")
+        user_ids = [identifier(user, "allowed_user_ids entry", positive=True) for user in users]
+        if not isinstance(usernames, list):
+            raise ChannelError("allowed_usernames must be a list of username strings")
+        user_names = [username(user) for user in usernames]
+        if type(private) is not bool:
+            raise ChannelError("private_chats_only must be a boolean")
         if type(timeout) is not int:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
-        return cls(token, name=name, allowed_chat_ids=allowed_ids, poll_timeout=timeout)
+        return cls(
+            token,
+            name=name,
+            allowed_chat_ids=allowed_ids,
+            allowed_user_ids=user_ids,
+            allowed_usernames=user_names,
+            private_chats_only=private,
+            poll_timeout=timeout,
+        )
 
     async def open(self) -> None:
         if self._closing:
@@ -212,13 +256,21 @@ class TelegramBot(Channel):
                 for update, update_id in zip(updates, ids, strict=True):
                     if update_id < self._offset:
                         continue
-                    acknowledged = await self._ack_callback(update)
-                    for event in map_update(
+                    events = map_update(
                         update,
                         bot_id=self._bot_id,
                         allowed_chats=self._allowed_chats,
-                        callback_acknowledged=acknowledged,
-                    ):
+                        allowed_users=self._allowed_users,
+                        allowed_usernames=self._allowed_usernames,
+                        private_chats_only=self._private_chats_only,
+                        callback_acknowledged=False,
+                    )
+                    for event in events:
+                        # Authorize and validate before any protocol acknowledgement
+                        # or host delivery (including host-command parsing).
+                        if event.event_type == "callback_query":
+                            acknowledged = await self._ack_callback(update)
+                            event = replace(event, metadata={**event.metadata, "callback_acknowledged": acknowledged})
                         await receive(event)
                     # No await between durable acceptance and local offset advancement.
                     # The next getUpdates confirms this event remotely. Filtered events

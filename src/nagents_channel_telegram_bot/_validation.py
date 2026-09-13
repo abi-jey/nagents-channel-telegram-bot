@@ -12,6 +12,7 @@ from nagents.channels import ChannelValue
 MAX_ID = 2**63 - 1
 CHAT_PATTERN = r"^-?[1-9][0-9]{0,18}$"
 MESSAGE_PATTERN = r"^[1-9][0-9]{0,18}$"
+USERNAME_PATTERN = r"^@?[A-Za-z0-9_]{5,32}$"
 
 
 def identifier(value: object, field: str, *, positive: bool = False) -> str:
@@ -25,6 +26,18 @@ def integer(value: object, *, minimum: int = 1, maximum: int = MAX_ID) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         raise ChannelError("Telegram returned an invalid integer identifier or parameter")
     return value
+
+
+def username(value: object, *, allow_prefix: bool = True) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(USERNAME_PATTERN, value) is None
+        or (not allow_prefix and value.startswith("@"))
+    ):
+        raise ChannelError(
+            "username must contain 5-32 ASCII letters, digits or underscores; config permits one leading @"
+        )
+    return value.removeprefix("@").lower()
 
 
 def text(value: object) -> str:

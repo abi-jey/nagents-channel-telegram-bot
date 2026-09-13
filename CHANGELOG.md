@@ -2,6 +2,10 @@
 
 ## 0.1.0
 
+- Optional per-user admission by trusted numeric IDs or case-insensitive ASCII
+  usernames, conjunctive chat filtering, and private-only human/chat identity
+  validation. Filtering precedes host envelopes/commands and callback protocol
+  acknowledgements; rejected callbacks are discarded without answering them.
 - Callable `ChannelPlugin` discovery metadata, a flat secret-aware configuration
   schema, and private direct-token or environment-reference factory configuration.
 - Pure `/sessions`, `/session`, and `/new` host-command parsing with Telegram

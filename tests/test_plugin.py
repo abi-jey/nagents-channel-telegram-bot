@@ -29,7 +29,16 @@ def test_descriptor_entry_point_exposes_flat_secret_aware_schema(monkeypatch: py
     assert schema["type"] == "object" and schema["additionalProperties"] is False
     properties = schema["properties"]
     assert isinstance(properties, dict)
-    assert set(properties) == {"name", "token", "token_env", "allowed_chat_ids", "poll_timeout"}
+    assert set(properties) == {
+        "name",
+        "token",
+        "token_env",
+        "allowed_chat_ids",
+        "allowed_user_ids",
+        "allowed_usernames",
+        "private_chats_only",
+        "poll_timeout",
+    }
     token_schema = properties["token"]
     assert isinstance(token_schema, dict) and token_schema["writeOnly"] is True
     env_schema = properties["token_env"]

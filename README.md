@@ -49,10 +49,11 @@ can succeed. Web integration needs a Nagents build exposing `ChannelPlugin`,
    a webhook. If a previous application configured one, explicitly remove it as
    part of your own setup; this connector never calls `deleteWebhook` or drops the
    pending queue on startup. A Telegram 409 stops polling with a sanitized error.
-5. Optionally restrict admission using numeric `allowed_chat_ids`. An empty list
-   (the default) admits all supported chats visible to the bot. To discover a chat
-   ID, inspect the incoming channel envelope's `conversation_id` locally in a
-   controlled setup. Filtering is by chat, not by individual user or mention.
+5. Configure admission with `allowed_user_ids` and/or `allowed_usernames`, and use
+   `private_chats_only: true` for individual private conversations. Optional
+   `allowed_chat_ids` further restricts the destination chats. All lists default
+   to empty and private mode defaults to false, preserving unconstrained ingress.
+   See [Sender and private-chat admission](#sender-and-private-chat-admission).
 
 ```python
 import asyncio
@@ -106,8 +107,8 @@ if __name__ == "__main__":
 Use a stable session ID, channel name, bot identity, and persistent session database
 across restarts. Each connector attached to the Agent must have a unique `name`;
 give a second bot a different name. In this standalone example history is shared, so choose admitted
-chats with that shared identity in mind. `allowed_chat_ids` is an **inbound
-admission filter**, not an outbound authorization policy.
+chats with that shared identity in mind. The admission settings filter **inbound
+events**; the host owns outbound destination authorization.
 
 The Agent runtime opens the channel, owns the polling task, and cancels/awaits it
 before closing resources. Ctrl+C cancels the example's listener. If using the
@@ -161,6 +162,9 @@ unknown keys and incorrect types:
 | `token_env` | `TELEGRAM_BOT_TOKEN` when neither credential key is provided | Environment variable name; its value must contain a bot token |
 | `name` | `telegram` | 1–64 ASCII letters/digits/`_`/`.`/`-`, starting with a letter or underscore |
 | `allowed_chat_ids` | `[]` | List of nonzero, canonical decimal ID **strings**; empty means all |
+| `allowed_user_ids` | `[]` | List of positive, canonical decimal user ID **strings**, at most `2^63-1`; OR username matches |
+| `allowed_usernames` | `[]` | List of 5–32 ASCII letters/digits/`_` strings, optionally prefixed with one `@`; normalized to lowercase; OR user ID matches |
+| `private_chats_only` | `false` | Boolean only; requires a human sender in a private chat with `chat.id == from.id` (callback actor for buttons) |
 | `poll_timeout` | `30` | Integer 1–50 seconds; booleans rejected |
 
 Provide **either `token` or `token_env`**, never both. Ambiguity is rejected by key
@@ -173,13 +177,92 @@ connection ID. Constructors/factories never retain the configuration dictionary
 or put credential values into errors or descriptor metadata.
 
 Direct Python construction remains available:
-`TelegramBot(token, *, name="telegram", allowed_chat_ids=(),
-poll_timeout=30, base_url="https://api.telegram.org")`. For the constructor only,
-`allowed_chat_ids` accepts a list or tuple. The optional `base_url` is a **trusted
-operator-configured origin** (no path, credentials, query, or fragment), never
+`TelegramBot(token, *, name="telegram", allowed_chat_ids=(), allowed_user_ids=(),
+allowed_usernames=(), private_chats_only=False, poll_timeout=30,
+base_url="https://api.telegram.org")`. For the constructor only, all three admission
+lists accept a list or tuple; factories require JSON lists. The optional `base_url`
+is a **trusted operator-configured origin** (no path, credentials, query, or fragment), never
 model input. HTTPS is required except for HTTP loopback/localhost test servers.
 It changes where the token is sent; use only dummy tokens in local tests. Imports
 and constructors make no network requests. `open()` authenticates with `getMe`.
+
+## Sender and private-chat admission
+
+The connector validates admission before delivering **any envelope to the host**,
+so rejected input cannot reach host commands, session routing or model execution.
+Rejected callbacks also receive **no `answerCallbackQuery` protocol acknowledgement**.
+The polling offset still advances past discarded updates so they do not block the
+queue. Accepted callbacks retain their one-shot acknowledgement before host delivery.
+
+The policy is:
+
+```text
+(both user lists empty OR user ID matches OR username matches)
+AND (chat list empty OR chat ID matches)
+AND (private mode off OR valid private chat belonging to the acting user)
+```
+
+- Either nonempty user list enables strict human-sender validation. For new and
+  edited messages the sole authority is Telegram's top-level **`message.from`**
+  or **`edited_message.from`**. For buttons it is **`callback_query.from`**, never
+  the original message author, which is commonly the bot itself.
+- A sender must have a positive integer `id` (booleans and numeric strings are
+  rejected) and an explicit boolean `is_bot: false`. An absent username is allowed
+  for an ID match. A present username must be valid, even when the ID matches.
+  Missing/malformed senders and all bots are discarded while user filtering is on.
+- Incoming usernames have no `@`; configuration may have one leading `@`. Both
+  use exactly 5–32 ASCII letters, digits or underscores, compared in lowercase.
+  Whitespace, Unicode lookalikes, punctuation, wrong types and out-of-range lengths
+  are rejected, rather than stripped or ignored. Configuration errors fail creation;
+  invalid sender identities are discarded. Lists are copied, normalized and deduplicated.
+- Text, captions, mentions (including `text_mention` users), display names, chat
+  usernames, forward authors, reply authors and quotes never grant access. A
+  trusted human may forward another person's content, but forwarded text remains
+  ineligible for host-command parsing.
+- Message/edit `sender_chat` presence, including anonymous group administrators,
+  and channel-post updates are rejected while user filtering is on. Restricted
+  events need a valid private/group/supergroup chat; channel/unknown chat types
+  are rejected. For callbacks, the source message's author/`sender_chat` is only
+  provenance, not the clicking user's identity.
+- `private_chats_only: true` also requires a valid human sender when both user
+  lists are empty. It requires `chat.type == "private"`, a positive integer chat
+  ID equal to the **acting sender's ID**, and no source `sender_chat`. Thus a
+  trusted clicker cannot authorize a different private destination. Inaccessible
+  callback source messages remain supported when they carry valid private chat
+  and message IDs; the original message's `from` is not required.
+- With both user lists empty and private mode false, legacy sender handling is
+  retained, including other bots, anonymous senders and channel posts. The
+  connector's own bot is always filtered when Telegram identifies it as sender.
+
+Usernames are mutable and may be reassigned. Prefer `allowed_user_ids` for stable
+account identity; supplying a username as well deliberately grants access by
+**either** criterion, rather than pinning that username to an ID. ID configuration
+rejects whitespace, signs on positive user IDs, leading zeroes and non-string values.
+
+For three separate private conversations, a generic host configuration is:
+
+```json
+{
+  "token_env": "TELEGRAM_BOT_TOKEN",
+  "allowed_usernames": ["@example_user_one", "example_user_two", "example_user_three"],
+  "private_chats_only": true,
+  "poll_timeout": 30
+}
+```
+
+Replace the example usernames with trusted accounts in the host configuration.
+If the host privately injects `token`, omit `token_env`. Each user must start their
+own private chat with the bot. An empty chat list allows those trusted accounts to
+use their own private chat IDs without pre-discovering them. The web host's default
+per-chat routing provides separate sessions; standalone `Agent.listen(session_id=...)`
+still shares one session. A user allowlist alone permits trusted users in groups,
+where replies are visible to unverified group members: enable private mode for
+private per-user conversations.
+
+These settings are **inbound admission controls**. `send`, edit and delete still
+use the host-authorized destination; there is no inferred username-to-destination
+mapping or outbound user lookup. The host must enforce session-owner-to-destination
+authorization. Typing retains its existing chat-list filter.
 
 ## Web-host installation and routing
 
@@ -201,22 +284,31 @@ For a host that implements channel management:
    The destination is operator/host configuration, not an inbound Telegram value.
 2. Use the management UI's **Refresh** action. The installed `telegram-bot` entry
    point supplies the descriptor and schema for the plugin picker/configuration
-   form. Upgrading already imported code/dependencies may require a host restart.
+   form. When upgrading this connector in a running host, restart the host process
+   to load the new code/schema; Refresh alone can retain already imported modules.
 3. Configure a connection with **either** the private `token` secret field **or**
    a `token_env` reference. Omit the unused key. The host stores secrets separately
    from public config, outside the workspace, and does not return saved values in
    its management responses. The descriptor's `writeOnly` flag identifies `token`
    as a secret; no credential value is embedded in the schema.
-4. Set the optional chat admission list, poll timeout, enabled state and host's
-   main-session selection. The connection ID becomes the connector's stable
-   `name`. Keep one polling consumer per bot token across all host instances.
+4. Set the user admission lists and private mode, optional chat list, poll timeout,
+   enabled state and host's main-session selection. The connection ID becomes the
+   connector's stable `name`. Keep one polling consumer per bot token across all
+   host instances.
+
+Admission settings are captured when a connector is constructed. After changing
+configuration, the host must recreate/reopen that connection (or restart the host);
+closing/reopening the same Python object does not reread saved configuration.
 
 The web host binds each `(name, conversation_id)` to a separate persisted session
-by default and serializes model execution against its shared Harness. A chat can
-reattach to another session using the commands below. Two chats only share history
-when the host binds them to the same session. `thread_id` remains the Telegram
-topic target inside that chat. `Agent.listen(session_id=...)` remains available
-for applications that deliberately want the single shared identity shown above.
+by default and serializes model execution against its shared Harness. Session
+ownership and command restrictions depend on the host version: older hosts allow
+cross-chat reattachment. For isolated conversations, use a host that permanently
+retains each session's chat owner and limits listing, selection, and outbound tools
+to that owner. Connector admission alone cannot enforce that storage policy.
+`thread_id` remains the Telegram topic target inside its chat.
+`Agent.listen(session_id=...)` remains available for applications that deliberately
+want the single shared identity shown above.
 
 ## Host command parsing
 
@@ -306,7 +398,7 @@ Polling explicitly requests `message`, `edited_message`, `channel_post`,
 | --- | --- |
 | `message_id` | `update_id` converted to string: deduplication identity, **not** a send/edit/delete ID |
 | `conversation_id` | Numeric `chat.id` string |
-| `sender_id` | `sender_chat.id`, otherwise `from.id`; channel ID when a post has no user sender |
+| `sender_id` | Acting `from.id` (`callback_query.from.id` for buttons); legacy unrestricted messages may use `sender_chat.id` or the channel ID |
 | `text` | Message text or caption; callback data (or game short name) for button events |
 | `thread_id` | `message_thread_id`, or empty |
 | `reply_to` | Source Telegram message ID, suitable for replying to this event; for callbacks, the button's message ID |
@@ -334,9 +426,11 @@ file URL is produced. Albums arrive as individual updates sharing `media_group_i
 
 The following are deliberately discarded and acknowledged by a subsequent poll:
 
-- Chats outside the admission list; messages whose `from.id` identifies this bot.
-  Other bots are not blanket-filtered. Channel posts may not identify the sending
-  bot, so own-message attribution is only possible when Telegram supplies it.
+- Events outside the configured user/chat/private admission policy; messages or
+  callbacks whose acting `from.id` identifies this bot. Other bots and channel
+  posts remain supported only with user/private filtering disabled. Channel posts
+  may not identify the sending bot, so legacy own-message attribution is only
+  possible when Telegram supplies it.
 - Unsupported update types (including stale updates from earlier allowed-update
   settings), service/content types without supported text or files, and inline
   callbacks without an addressable chat.
@@ -344,12 +438,14 @@ The following are deliberately discarded and acknowledged by a subsequent poll:
   scheduled messages, which require routing fields this connector does not expose.
 
 Chat-backed callbacks, including inaccessible source messages with a usable chat
-and message ID, are admitted. `answerCallbackQuery` is attempted **once, before
-admission**, with a five-second timeout and no text/alert/URL. This only clears the
-client's progress indicator; it is a protocol acknowledgement, not an Agent reply
-or a Telegram update acknowledgement. It is attempted even for filtered callbacks.
-Failure/expiry does not discard a supported event; `callback_acknowledged` records
-whether Telegram confirmed it. There is no redundant callback-answer model action.
+and message ID, are admitted when they pass all filters. `answerCallbackQuery` is
+attempted **once, after filtering/mapping and before durable host admission**, with
+a five-second timeout and no text/alert/URL. This only clears the client's progress
+indicator; it is a protocol acknowledgement, not an Agent reply or a Telegram
+update acknowledgement. Filtered, unsupported and unapproved callbacks receive no
+such acknowledgement, including inline callbacks. Failure/expiry does not discard
+an accepted event; `callback_acknowledged` records whether Telegram confirmed it.
+There is no redundant callback-answer model action.
 
 For admitted events, the offset advances **only after `await receive(event)`
 returns**, which the Nagents runtime defines as durable inbox admission. The next

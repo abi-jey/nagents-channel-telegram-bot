@@ -2,6 +2,8 @@
 
 from nagents.channels import ChannelPlugin
 
+from ._validation import MESSAGE_PATTERN
+from ._validation import USERNAME_PATTERN
 from .bot import TelegramBot
 
 plugin = ChannelPlugin(
@@ -29,9 +31,39 @@ plugin = ChannelPlugin(
             },
             "allowed_chat_ids": {
                 "type": "array",
-                "description": "Admit these numeric chat IDs; empty admits all visible supported chats.",
+                "description": (
+                    "Inbound chat IDs (signed 64-bit); AND user/private filters. Empty leaves chats unconstrained."
+                ),
                 "items": {"type": "string", "pattern": "^-?[1-9][0-9]{0,18}$"},
                 "default": [],
+            },
+            "allowed_user_ids": {
+                "type": "array",
+                "description": (
+                    "Trusted positive user ID strings (max 2^63-1), OR allowed_usernames; AND chats. "
+                    "Either nonempty user list requires a valid human Telegram sender; "
+                    "both empty disable user filtering."
+                ),
+                "items": {"type": "string", "pattern": MESSAGE_PATTERN, "maxLength": 19},
+                "default": [],
+            },
+            "allowed_usernames": {
+                "type": "array",
+                "description": (
+                    "Trusted Telegram from.username values, case-insensitive, optional leading @ in config. "
+                    "5-32 ASCII letters/digits/underscores; OR allowed_user_ids, AND chats. "
+                    "Usernames can change owners; prefer IDs for stable identity. Both empty disable user filtering."
+                ),
+                "items": {"type": "string", "pattern": USERNAME_PATTERN, "minLength": 5, "maxLength": 33},
+                "default": [],
+            },
+            "private_chats_only": {
+                "type": "boolean",
+                "description": (
+                    "Only human senders in private chats whose chat ID equals the acting user's ID "
+                    "(callback_query.from for buttons). Rejects shared group/channel ingress."
+                ),
+                "default": False,
             },
             "poll_timeout": {
                 "type": "integer",

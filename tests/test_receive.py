@@ -298,7 +298,7 @@ async def test_filtering_and_inaccessible_callback(server: TelegramServer) -> No
         assert (await server.next_poll())["offset"] == 110
         assert [event.message_id for event in events] == ["108", "109"]
         assert events[1].sender_id == "-100"
-        assert len(server.calls("answerCallbackQuery")) == 2
+        assert server.calls("answerCallbackQuery") == [{"callback_query_id": "inaccessible"}]
     finally:
         await cancel(task)
         await channel.close()

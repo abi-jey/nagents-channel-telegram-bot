@@ -7,6 +7,7 @@ from nagents.channels import ChannelValue
 
 from ._validation import integer
 from ._validation import object_value
+from ._validation import username
 
 UPDATE_TYPES = ("message", "edited_message", "channel_post", "edited_channel_post", "callback_query")
 _MEDIA_TYPES = {
@@ -100,24 +101,83 @@ def _attachments(message: dict[str, ChannelValue]) -> tuple[tuple[ChannelAttachm
     return tuple(attachments), metadata
 
 
+def _trusted_sender(
+    kind: str,
+    payload: dict[str, ChannelValue],
+    message: dict[str, ChannelValue],
+    *,
+    allowed_users: frozenset[str],
+    allowed_usernames: frozenset[str],
+    private_chats_only: bool,
+) -> bool:
+    """Fail closed on restricted ingress; only the acting Telegram User is authority."""
+    if kind in ("channel_post", "edited_channel_post") or "sender_chat" in payload:
+        return False
+    try:
+        # For callbacks payload is the query, NOT its original (often bot-authored) message.
+        sender = object_value(payload.get("from"))
+        sender_id = integer(sender.get("id"))
+        if sender.get("is_bot") is not False:
+            return False
+        sender_username = username(sender["username"], allow_prefix=False) if "username" in sender else ""
+        chat = object_value(message.get("chat"))
+        chat_id = integer(chat.get("id"), minimum=-(2**63 - 1))
+        if not chat_id or chat.get("type") not in ("private", "group", "supergroup"):
+            return False
+        if private_chats_only and (chat.get("type") != "private" or chat_id != sender_id or "sender_chat" in message):
+            return False
+    except ChannelError:
+        # A malformed/unknown sender is a discarded update, not a polling failure.
+        return False
+    return not (allowed_users or allowed_usernames) or (
+        str(sender_id) in allowed_users or sender_username in allowed_usernames
+    )
+
+
 def map_update(
-    update: dict[str, ChannelValue], *, bot_id: int, allowed_chats: frozenset[str], callback_acknowledged: bool
+    update: dict[str, ChannelValue],
+    *,
+    bot_id: int,
+    allowed_chats: frozenset[str],
+    callback_acknowledged: bool,
+    allowed_users: frozenset[str] = frozenset(),
+    allowed_usernames: frozenset[str] = frozenset(),
+    private_chats_only: bool = False,
 ) -> tuple[ChannelMessage, ...]:
-    """An empty tuple deliberately filters an update; malformed supported data raises."""
+    """Filter before mapping content; malformed supported content otherwise raises.
+
+    User lists are prevalidated/normalized by the constructor. IDs OR usernames
+    grant user admission, AND the chat list and optional private-chat restriction.
+    Empty user lists preserve legacy sender handling unless private mode is enabled.
+    """
     kinds = [kind for kind in UPDATE_TYPES if kind in update]
     if not kinds:
         return ()
     if len(kinds) != 1:
         raise ChannelError("Telegram returned an ambiguous update")
     kind = kinds[0]
+    restricted = bool(allowed_users or allowed_usernames or private_chats_only)
+    if restricted and not isinstance(update[kind], dict):
+        return ()
     payload = object_value(update[kind])
     is_callback = kind == "callback_query"
     if is_callback:
         if "message" not in payload:  # Inline callbacks have no addressable chat.
             return ()
+        if restricted and not isinstance(payload["message"], dict):
+            return ()
         message = object_value(payload["message"])
     else:
         message = payload
+    if restricted and not _trusted_sender(
+        kind,
+        payload,
+        message,
+        allowed_users=allowed_users,
+        allowed_usernames=allowed_usernames,
+        private_chats_only=private_chats_only,
+    ):
+        return ()
     # These contexts need destination fields not supported by this connector.
     if any(key in message for key in ("business_connection_id", "direct_messages_topic", "guest_query_id")):
         return ()
