@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nagents-channel-telegram-bot"
+version = "0.1.0"
+description = "Telegram Bot API long-polling channel for Nagents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Abbas Jafari"}]
+dependencies = ["nagents>=0.6.0a1,<0.7", "aiohttp>=3.11,<4"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "mypy>=1.15",
+    "packaging>=24",
+    "pre-commit>=4",
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.11",
+    "twine>=6",
+]
+
+[project.entry-points."nagents.channels"]
+telegram-bot = "nagents_channel_telegram_bot:plugin"
+
+[project.urls]
+Repository = "https://github.com/abi-jey/nagents-channel-telegram-bot"
+Issues = "https://github.com/abi-jey/nagents-channel-telegram-bot/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nagents_channel_telegram_bot"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/LICENSE", "/pyproject.toml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TC", "RUF"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+known-first-party = ["nagents_channel_telegram_bot", "tools"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests", "tools"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["error"]
