@@ -19,15 +19,15 @@ indicators. It does not access a session database or choose bindings itself.
 ```sh
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m pip install 'nagents>=0.6.0a1,<0.7' nagents-channel-telegram-bot
+python -m pip install 'nagents>=0.6.0a24202,<0.7' nagents-channel-telegram-bot
 ```
 
-This package requires the Channel API in **Nagents 0.6**, including its alpha
-releases: `nagents>=0.6.0a1,<0.7`. To test a connector alpha before either feature
+This package requires the Channel and execution-hook APIs in **Nagents 0.6**,
+starting with `nagents>=0.6.0a24202,<0.7`. To test a connector alpha before either feature
 PR is merged, explicitly enable prereleases:
 
 ```sh
-python -m pip install --pre --upgrade 'nagents>=0.6.0a1,<0.7' nagents-channel-telegram-bot
+python -m pip install --pre --upgrade 'nagents>=0.6.0a24202,<0.7' nagents-channel-telegram-bot
 # Replace N with the published tag's alpha number or manual workflow run number:
 python -m pip install --pre 'nagents-channel-telegram-bot==0.1.0aN'
 ```
@@ -624,7 +624,7 @@ Before a Nagents 0.6 alpha is published, maintainers testing against a local che
 the frozen Channel contracts can install that checkout and this package with
 `python -m pip install --no-deps -e <path>` for each, then install the development
 tools separately. This is a local verification override; released dependency
-metadata remains `nagents>=0.6.0a1,<0.7`.
+metadata retains its published minimum, `nagents>=0.6.0a24202,<0.7`.
 
 ### Draft PR milestones and feature-branch alphas
 

@@ -123,8 +123,10 @@ def test_dependency_accepts_core_alpha_and_caps_next_minor() -> None:
     core = next(Requirement(value) for value in dependencies if Requirement(value).name == "nagents")
     assert core.specifier.prereleases
     assert Version("0.6.0a0") not in core.specifier
-    assert Version("0.6.0a1") in core.specifier
-    assert Version("0.6.0a42") in core.specifier
+    assert Version("0.6.0a23601") not in core.specifier
+    assert Version("0.6.0a24201") not in core.specifier
+    assert Version("0.6.0a24202") in core.specifier
+    assert Version("0.6.0a24301") in core.specifier
     assert Version("0.6.0") in core.specifier
     assert Version("0.6.9") in core.specifier
     assert Version("0.5.0") not in core.specifier

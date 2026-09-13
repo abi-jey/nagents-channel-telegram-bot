@@ -2,6 +2,9 @@
 
 ## 0.1.0
 
+- Require Nagents `0.6.0a24202` or newer so dependency resolution includes the
+  shared channel execution-event API.
+
 - Opt-in shared `Channel.on_event` execution rendering: compact safe tool previews,
   working/approval/terminal states, correlated stale-event rejection, bounded
   notices and existing four-second typing keepalives. Older SDK imports remain supported.
