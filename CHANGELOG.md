@@ -2,6 +2,9 @@
 
 ## 0.1.0
 
+- Opt-in shared `Channel.on_event` execution rendering: compact safe tool previews,
+  working/approval/terminal states, correlated stale-event rejection, bounded
+  notices and existing four-second typing keepalives. Older SDK imports remain supported.
 - Optional per-user admission by trusted numeric IDs or case-insensitive ASCII
   usernames, conjunctive chat filtering, and private-only human/chat identity
   validation. Filtering precedes host envelopes/commands and callback protocol

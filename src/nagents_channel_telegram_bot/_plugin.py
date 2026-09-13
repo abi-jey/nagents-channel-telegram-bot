@@ -72,6 +72,14 @@ plugin = ChannelPlugin(
                 "maximum": 50,
                 "default": 30,
             },
+            "execution_notifications": {
+                "type": "boolean",
+                "description": (
+                    "Opt in to shared Channel execution hooks: working/approval/terminal states, compact tool "
+                    "notices and typing. Host must authorize the owning chat; no final assistant text is broadcast."
+                ),
+                "default": False,
+            },
         },
         "additionalProperties": False,
     },

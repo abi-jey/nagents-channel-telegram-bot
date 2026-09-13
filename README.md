@@ -165,6 +165,7 @@ unknown keys and incorrect types:
 | `allowed_user_ids` | `[]` | List of positive, canonical decimal user ID **strings**, at most `2^63-1`; OR username matches |
 | `allowed_usernames` | `[]` | List of 5–32 ASCII letters/digits/`_` strings, optionally prefixed with one `@`; normalized to lowercase; OR user ID matches |
 | `private_chats_only` | `false` | Boolean only; requires a human sender in a private chat with `chat.id == from.id` (callback actor for buttons) |
+| `execution_notifications` | `false` | Boolean only; opt in to shared execution lifecycle/tool notices and their typing indicators |
 | `poll_timeout` | `30` | Integer 1–50 seconds; booleans rejected |
 
 Provide **either `token` or `token_env`**, never both. Ambiguity is rejected by key
@@ -178,7 +179,7 @@ or put credential values into errors or descriptor metadata.
 
 Direct Python construction remains available:
 `TelegramBot(token, *, name="telegram", allowed_chat_ids=(), allowed_user_ids=(),
-allowed_usernames=(), private_chats_only=False, poll_timeout=30,
+allowed_usernames=(), private_chats_only=False, execution_notifications=False, poll_timeout=30,
 base_url="https://api.telegram.org")`. For the constructor only, all three admission
 lists accept a list or tuple; factories require JSON lists. The optional `base_url`
 is a **trusted operator-configured origin** (no path, credentials, query, or fragment), never
@@ -388,6 +389,74 @@ await channel.activity(ChannelActivity(
   worker; cancelling a duplicate start does not cancel the original owner.
 - `close()` stops all workers and joins shielded cleanup before releasing HTTP
   resources. The caller still owns cancellation of its polling/listen task.
+
+## Shared execution notifications
+
+Set **`execution_notifications: true`** to opt in to Telegram rendering of the
+public `Channel.on_event(ChannelExecutionEvent)` hook. The default is false, so
+upgrading a connector does not start sending unsolicited progress messages.
+The host must also authorize execution notifications for the owning chat (the web
+host uses its connection's `auto_reply` policy). These are lifecycle notices;
+autonomous model-authored messages still use the host-authorized channel tools.
+
+This requires a Nagents build exposing `ChannelExecutionEvent` and
+`dispatch_channel_execution_event`. The connector uses type-only imports for the
+new contract and can still be installed/imported on an older host before its SDK
+upgrade. That older host simply does not invoke this hook. Restart the host after
+upgrading core/connector code, and recreate the configured connection.
+
+The host awaits `dispatch_channel_execution_event(channel, event)` for these phases:
+
+| Phase | Telegram rendering |
+| --- | --- |
+| `run_started` | `⏳ Working` and typing |
+| `tool_requested` | `🔧 tool_name (requested)` plus short argument lines |
+| `tool_completed` | Tool name plus `done` or `failed` only, subject to tool-notice limits |
+| `waiting_for_approval` | `⏸ Waiting for approval`; only when the host is actually awaiting a decision |
+| `completed` / `failed` / `cancelled` | Fixed terminal status and local typing stop |
+
+For example, a tool request may render as plain text:
+
+```text
+🔧 shell (requested)
+  path: README.md
+  command: ls -l
+```
+
+- This is display text, never executable input. There is no `parse_mode`, Markdown
+  entity injection, assistant-final broadcast, result blob, or raw exception text.
+  A request notice does not claim the tool was approved or executed.
+- At most four short scalar arguments are shown, each string at most **80 UTF-16
+  units**, with a **400-unit** tool notice bound. Benign paths, short commands and
+  printable Unicode are supported. Long/nested values, secret/content fields,
+  credential patterns, controls and SDK redaction markers are omitted completely;
+  values are never truncated into a potentially sensitive prefix. The bot's own
+  token is checked against full original values, including nested/excluded fields,
+  before preview selection. Hosts must additionally check their known credentials
+  before constructing the shared SDK event.
+- `channel_send`, `channel_list` and `channel_action` tool notices are suppressed.
+  Execution hooks never call model tools or generate recursive tool events.
+- The host supplies the permanently owning conversation, session and correlation
+  IDs. The connector requires nonempty session/run IDs and a `run_started` event,
+  pins that run to one chat/thread/session, and rejects mismatched or stale events.
+  A newer run on the same target supersedes the previous one; its late terminal
+  event cannot stop the new run's typing. No route is inferred from tool arguments.
+  Chat admission IDs and private-only destination restrictions also apply to hooks.
+- Each run permits **8 tool notices**, spaced at least **2 seconds** apart, and
+  **8 distinct approval notices**. Start/approval/terminal states bypass that tool
+  throttle. Dedup uses phase, activation and call ID with at most 128 tool entries.
+  There are at most 64 active runs and 256 retired-run tombstones per connector.
+  Hosts must not replay WS/history hydration through this live hook.
+- Notice sends are attempted once with a one-second deadline. Failure or uncertain
+  delivery does not fail a model/tool, retry a send, or expose an error body. A
+  Telegram `retry_after` suppresses subsequent notice attempts during its cooldown.
+- Typing reuses the existing **four-second keepalive** and is independent of text
+  delivery success. It remains active for the whole root turn, including approval
+  waits and actions. Existing matching `Channel.activity` starts are idempotent;
+  terminal events stop typing before attempting terminal text. The host retains
+  its whole-turn activity cleanup as well.
+- Hook I/O is awaited with no delivery worker/queue. `close()` stops admission,
+  joins an in-flight hook, joins typing cleanup and then releases HTTP resources.
 
 ## Incoming events and acknowledgement
 

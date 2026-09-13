@@ -1,10 +1,12 @@
 """Public Nagents Channel implementation for a single Telegram bot consumer."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import re
-from collections.abc import Sequence
 from dataclasses import replace
+from typing import TYPE_CHECKING
 from typing import Self
 
 from nagents.channels import Channel
@@ -21,6 +23,7 @@ from nagents.channels import ChannelValue
 from ._activity import Typing
 from ._activity import finish_cleanup
 from ._commands import parse_command
+from ._execution import ExecutionNotifications
 from ._mapping import UPDATE_TYPES
 from ._mapping import map_update
 from ._transport import Transport
@@ -30,6 +33,11 @@ from ._validation import integer
 from ._validation import object_value
 from ._validation import text
 from ._validation import username
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from nagents.channels import ChannelExecutionEvent
 
 
 class TelegramBot(Channel):
@@ -81,6 +89,7 @@ class TelegramBot(Channel):
         allowed_user_ids: Sequence[str] = (),
         allowed_usernames: Sequence[str] = (),
         private_chats_only: bool = False,
+        execution_notifications: bool = False,
         poll_timeout: int = 30,
         base_url: str = "https://api.telegram.org",
     ) -> None:
@@ -96,6 +105,8 @@ class TelegramBot(Channel):
             raise ChannelError("allowed_usernames must be a list or tuple of username strings")
         if type(private_chats_only) is not bool:
             raise ChannelError("private_chats_only must be a boolean")
+        if type(execution_notifications) is not bool:
+            raise ChannelError("execution_notifications must be a boolean")
         if type(poll_timeout) is not int or not 1 <= poll_timeout <= 50:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
         self.name = name
@@ -108,6 +119,8 @@ class TelegramBot(Channel):
         self._poll_timeout = poll_timeout
         self._transport = Transport(token, base_origin(base_url))
         self._typing = Typing(self._transport)
+        self._execution_notifications = execution_notifications
+        self._execution = ExecutionNotifications(self._transport, self._typing, token)
         self._lifecycle_lock = asyncio.Lock()
         self._bot_id = 0
         self._bot_username = ""
@@ -128,6 +141,7 @@ class TelegramBot(Channel):
             "allowed_user_ids",
             "allowed_usernames",
             "private_chats_only",
+            "execution_notifications",
             "poll_timeout",
         }
         if not isinstance(config, dict) or set(config) - keys:
@@ -148,6 +162,7 @@ class TelegramBot(Channel):
         users = config.get("allowed_user_ids", [])
         usernames = config.get("allowed_usernames", [])
         private = config.get("private_chats_only", False)
+        notifications = config.get("execution_notifications", False)
         timeout = config.get("poll_timeout", 30)
         if not isinstance(name, str):
             raise ChannelError("name must be a string")
@@ -162,6 +177,8 @@ class TelegramBot(Channel):
         user_names = [username(user) for user in usernames]
         if type(private) is not bool:
             raise ChannelError("private_chats_only must be a boolean")
+        if type(notifications) is not bool:
+            raise ChannelError("execution_notifications must be a boolean")
         if type(timeout) is not int:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
         return cls(
@@ -171,6 +188,7 @@ class TelegramBot(Channel):
             allowed_user_ids=user_ids,
             allowed_usernames=user_names,
             private_chats_only=private,
+            execution_notifications=notifications,
             poll_timeout=timeout,
         )
 
@@ -201,6 +219,7 @@ class TelegramBot(Channel):
                     if self._closing:
                         raise ChannelError("Telegram channel is closing")
                     self._typing.open()
+                    self._execution.open()
                     self._opened = True
                 except BaseException:
                     await finish_cleanup(self._transport.close())
@@ -229,6 +248,24 @@ class TelegramBot(Channel):
     def _require_open(self) -> None:
         if not self._opened:
             raise ChannelError("Telegram channel is not open")
+
+    async def on_event(self, event: ChannelExecutionEvent) -> None:
+        """Render shared SDK execution events when opted in; the host owns authorization."""
+        if not self._execution_notifications or not self._opened or self._closing:
+            return
+        try:
+            chat = identifier(event.conversation_id, "execution conversation")
+            if (self._allowed_chats and chat not in self._allowed_chats) or (
+                self._private_chats_only and int(chat) < 0
+            ):
+                return
+            await self._execution.handle(event)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+        except Exception:
+            pass  # Optional protocol hook: never fail model/tools or log plugin data.
 
     async def listen(self, receive: ChannelReceiver) -> None:
         self._require_open()
@@ -359,6 +396,7 @@ class TelegramBot(Channel):
         self._closing += 1
         self._opened = False
         self._typing.disable()
+        self._execution.disable()
         try:
             await finish_cleanup(self._close_resources())
         finally:
@@ -367,6 +405,7 @@ class TelegramBot(Channel):
     async def _close_resources(self) -> None:
         async with self._lifecycle_lock:
             try:
+                await self._execution.close()
                 await self._typing.close()
             finally:
                 await self._transport.close()
