@@ -64,7 +64,7 @@ jobs:
         run: >-
           python tools/release.py --mode "$RELEASE_MODE"
           --tag "$RELEASE_TAG" --run-number "$RELEASE_RUN_NUMBER"
-      - name: Install (accepts published Nagents 0.6 alphas)
+      - name: Install (accepts published Nagents releases and prereleases)
         run: python -m pip install --pre -e '.[dev]'
       - run: pre-commit run --all-files
       - run: python -m pytest

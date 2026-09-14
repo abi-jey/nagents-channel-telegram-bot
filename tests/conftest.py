@@ -22,6 +22,13 @@ BOT_USERNAME = "offline_bot"
 ResponseFactory = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+@dataclass
+class Clock:
+    """Stand-in for the asyncio module so retry sleeps are recorded, not awaited."""
+
+    sleep: Callable[[float], Awaitable[None]]
+
+
 def ok(result: ChannelValue) -> web.Response:
     return web.json_response({"ok": True, "result": result})
 
@@ -124,17 +131,22 @@ async def bot(server: TelegramServer) -> AsyncIterator[TelegramBot]:
         await channel.close()
 
 
-@pytest.fixture
-def retry_delays(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch, target: str) -> list[float]:
     delays: list[float] = []
 
     async def sleep(delay: float) -> None:
         delays.append(delay)
 
-    # Patch only the transport module's namespace, not asyncio itself.
-    @dataclass
-    class Clock:
-        sleep: Callable[[float], Awaitable[None]]
-
-    monkeypatch.setattr("nagents_channel_telegram_bot._transport.asyncio", Clock(sleep))
+    # Patch only the module's own namespace, not asyncio itself.
+    monkeypatch.setattr(target, Clock(sleep))
     return delays
+
+
+@pytest.fixture
+def retry_delays(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    return _record_sleeps(monkeypatch, "nagents_channel_telegram_bot._transport.asyncio")
+
+
+@pytest.fixture
+def poll_delays(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    return _record_sleeps(monkeypatch, "nagents_channel_telegram_bot.bot.asyncio")

@@ -21,6 +21,11 @@ class _RequestError(ChannelError):
         self.retryable = retryable
 
 
+def retryable(error: BaseException) -> bool:
+    """Whether a failed request is transient enough for a listener to poll again later."""
+    return isinstance(error, _RequestError) and error.retryable
+
+
 class Transport:
     def __init__(self, token: str, origin: str) -> None:
         self._token = token

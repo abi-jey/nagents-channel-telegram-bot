@@ -2,8 +2,14 @@
 
 ## 0.1.0
 
-- Require Nagents `0.6.0a24202` or newer so dependency resolution includes the
-  shared channel execution-event API.
+- Accept the stable Nagents `0.7` line (`nagents>=0.6.0a24202,<0.8`) so the
+  connector installs with both the original execution-hook alpha and released
+  0.7 cores; resolution without `--pre` picks the stable release.
+
+- Keep long polling alive across transient outages: when one `getUpdates`
+  exhausts the transport's per-request retries, the listener backs off from one
+  to 60 seconds and polls again, resetting after a successful batch. Permanent
+  failures (401, 403, 409) still stop polling so the host can report them.
 
 - Opt-in shared `Channel.on_event` execution rendering: compact safe tool previews,
   working/approval/terminal states, correlated stale-event rejection, bounded
@@ -18,8 +24,8 @@
   entity/recipient validation and preserved reply/forward provenance.
 - Bounded, session-owned typing keepalives with rate-limit cooldowns and shielded
   lifecycle cleanup. Session selection remains the standalone/web host's policy.
-- Initial standalone connector for the Nagents 0.6 public Channel API, including
-  core prereleases (`nagents>=0.6.0a1,<0.7`).
+- Initial standalone connector for the Nagents public Channel API, including
+  core prereleases (`nagents>=0.7.0,<0.8`).
 - Bounded Telegram long polling, durable-admission offset handling, callback
   protocol acknowledgements, optional chat admission filtering, and file references.
 - Separate ingress update IDs, directly reusable transport `reply_to` IDs, and
