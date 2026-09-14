@@ -19,15 +19,16 @@ indicators. It does not access a session database or choose bindings itself.
 ```sh
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m pip install 'nagents>=0.6.0a24202,<0.7' nagents-channel-telegram-bot
+python -m pip install 'nagents>=0.6.0a24202,<0.8' nagents-channel-telegram-bot
 ```
 
-This package requires the Channel and execution-hook APIs in **Nagents 0.6**,
-starting with `nagents>=0.6.0a24202,<0.7`. To test a connector alpha before either feature
-PR is merged, explicitly enable prereleases:
+This package requires the Channel and execution-hook APIs first shipped in
+`nagents>=0.6.0a24202` and supports the `0.6` and `0.7` lines. Installing without
+`--pre` selects the stable 0.7 release. To test a connector alpha before either
+feature PR is merged, explicitly enable prereleases:
 
 ```sh
-python -m pip install --pre --upgrade 'nagents>=0.6.0a24202,<0.7' nagents-channel-telegram-bot
+python -m pip install --pre --upgrade 'nagents>=0.6.0a24202,<0.8' nagents-channel-telegram-bot
 # Replace N with the published tag's alpha number or manual workflow run number:
 python -m pip install --pre 'nagents-channel-telegram-bot==0.1.0aN'
 ```
@@ -589,6 +590,12 @@ increases the delay. No sleep exceeds 60 seconds: a larger requested delay stops
 the operation and surfaces the delay rather than retrying earlier than requested.
 All waits are cancellable. HTTP/API 401, 403 and 409 fail immediately.
 
+A long-running listener does not stop when one poll exhausts those retries: it
+backs off and polls again, doubling from one second up to 60 seconds and resetting
+after the next successful batch. `getMe` during `open()` and every mutation still
+surface their errors immediately, and 401, 403 and 409 stop polling so the host can
+report a configuration or conflict problem instead of hiding it.
+
 **Sends, edits, deletes and callback acknowledgements are never automatically
 retried.** Transport failures, server failures or malformed delivery confirmations
 raise `ChannelError(outcome_unknown=True)` for outbound operations because Telegram
@@ -620,11 +627,11 @@ development extras first. The tests use a loopback `aiohttp` server and dummy
 tokens; they never call Telegram or an LLM provider. CI runs on Ubuntu with Python
 3.11–3.14 and Windows with Python 3.13, and checks installation of the built wheel.
 
-Before a Nagents 0.6 alpha is published, maintainers testing against a local checkout of
+Before a Nagents release is published, maintainers testing against a local checkout of
 the frozen Channel contracts can install that checkout and this package with
 `python -m pip install --no-deps -e <path>` for each, then install the development
 tools separately. This is a local verification override; released dependency
-metadata retains its published minimum, `nagents>=0.6.0a24202,<0.7`.
+metadata retains its published minimum, `nagents>=0.6.0a24202,<0.8`.
 
 ### Draft PR milestones and feature-branch alphas
 

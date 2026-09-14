@@ -321,6 +321,48 @@ async def test_poll_retry_keeps_offset(bot: TelegramBot, server: TelegramServer,
         await cancel(task)
 
 
+async def test_transient_outage_is_survived(
+    bot: TelegramBot, server: TelegramServer, retry_delays: list[float], poll_delays: list[float]
+) -> None:
+    # Four 500s exhaust the transport's per-request budget, so the listener must
+    # back off and poll again rather than stopping the whole connector.
+    server.responses["getUpdates"].extend([failure(500), failure(500), failure(500), failure(500), ok([update(101)])])
+    accepted: list[str] = []
+    delivered = asyncio.Event()
+
+    async def receive(event: ChannelMessage) -> None:
+        accepted.append(event.message_id)
+        delivered.set()
+
+    task = asyncio.create_task(bot.listen(receive))
+    try:
+        await asyncio.wait_for(delivered.wait(), 2)
+        assert accepted == ["101"]
+        assert retry_delays == [1, 2, 4]
+        assert poll_delays == [1]
+    finally:
+        await cancel(task)
+
+
+async def test_repeated_outages_back_off_to_the_cap(
+    bot: TelegramBot, server: TelegramServer, retry_delays: list[float], poll_delays: list[float]
+) -> None:
+    server.responses["getUpdates"].extend(failure(503) for _ in range(32))
+    server.responses["getUpdates"].append(ok([update(101)]))
+    delivered = asyncio.Event()
+
+    async def receive(event: ChannelMessage) -> None:
+        delivered.set()
+
+    task = asyncio.create_task(bot.listen(receive))
+    try:
+        await asyncio.wait_for(delivered.wait(), 2)
+        assert retry_delays == [1, 2, 4] * 8
+        assert poll_delays == [1, 2, 4, 8, 16, 32, 60, 60]
+    finally:
+        await cancel(task)
+
+
 @pytest.mark.parametrize("status", [401, 403, 409])
 async def test_permanent_poll_failure(bot: TelegramBot, server: TelegramServer, status: int) -> None:
     server.responses["getUpdates"].append(failure(status))

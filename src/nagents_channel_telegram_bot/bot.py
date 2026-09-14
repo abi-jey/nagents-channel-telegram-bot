@@ -27,6 +27,7 @@ from ._execution import ExecutionNotifications
 from ._mapping import UPDATE_TYPES
 from ._mapping import map_update
 from ._transport import Transport
+from ._transport import retryable
 from ._validation import base_origin
 from ._validation import identifier
 from ._validation import integer
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from nagents.channels import ChannelExecutionEvent
+
+_POLL_BACKOFF = 1.0
+_POLL_BACKOFF_MAX = 60.0
 
 
 class TelegramBot(Channel):
@@ -272,18 +276,30 @@ class TelegramBot(Channel):
         if self._listening:
             raise ChannelError("Telegram channel already has a polling consumer")
         self._listening = True
+        backoff = _POLL_BACKOFF
         try:
             while self._opened:
-                result = await self._transport.request(
-                    "getUpdates",
-                    {
-                        "offset": self._offset,
-                        "limit": 20,
-                        "timeout": self._poll_timeout,
-                        "allowed_updates": list(UPDATE_TYPES),
-                    },
-                    timeout=self._poll_timeout + 10,
-                )
+                try:
+                    result = await self._transport.request(
+                        "getUpdates",
+                        {
+                            "offset": self._offset,
+                            "limit": 20,
+                            "timeout": self._poll_timeout,
+                            "allowed_updates": list(UPDATE_TYPES),
+                        },
+                        timeout=self._poll_timeout + 10,
+                    )
+                except ChannelError as error:
+                    # A long-running bot must outlast a dropped long poll or a brief
+                    # Telegram outage instead of stopping forever. Permanent failures
+                    # (bad token, conflict) still stop the connector for the host.
+                    if not retryable(error) or not self._opened:
+                        raise
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _POLL_BACKOFF_MAX)
+                    continue
+                backoff = _POLL_BACKOFF
                 if not isinstance(result, list) or len(result) > 20:
                     raise ChannelError("Telegram returned an invalid update batch")
                 updates = [object_value(item) for item in result]
