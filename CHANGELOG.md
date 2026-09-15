@@ -9,9 +9,8 @@
   Inbound events also populate `sent_at`, `sender_name`, `sender_username` and
   `conversation_type` for the host's formatted model context.
 
-- Accept the stable Nagents `0.7` line (`nagents>=0.6.0a24202,<0.8`) so the
-  connector installs with both the original execution-hook alpha and released
-  0.7 cores; resolution without `--pre` picks the stable release.
+- Require Nagents `>=0.8.0,<0.9`: the outbound attachment and presentation-field
+  additions this connector uses first ship in the 0.8 core line.
 
 - Keep long polling alive across transient outages: when one `getUpdates`
   exhausts the transport's per-request retries, the listener backs off from one
@@ -31,8 +30,7 @@
   entity/recipient validation and preserved reply/forward provenance.
 - Bounded, session-owned typing keepalives with rate-limit cooldowns and shielded
   lifecycle cleanup. Session selection remains the standalone/web host's policy.
-- Initial standalone connector for the Nagents public Channel API, including
-  core prereleases (`nagents>=0.7.0,<0.8`).
+- Initial standalone connector for the Nagents public Channel API.
 - Bounded Telegram long polling, durable-admission offset handling, callback
   protocol acknowledgements, optional chat admission filtering, and file references.
 - Separate ingress update IDs, directly reusable transport `reply_to` IDs, and
