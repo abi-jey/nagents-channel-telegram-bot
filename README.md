@@ -543,8 +543,9 @@ and its retention policy configured for your application.
 
 Nagents exposes `channel_send` and `channel_action` to the model for attached
 channels. The local `on_event` observer and final assistant response do not send
-anything. The connector advertises `receive`, `send_text`, `commands`, and `typing`,
-plus the two action schemas below. An application can also call the Channel directly:
+anything. The connector advertises `receive`, `send_text`, `send_files`,
+`commands`, `typing` and `fetch_attachment`, plus the two action schemas below.
+An application can also call the Channel directly:
 
 ```python
 from nagents.channels import ChannelSend
@@ -579,8 +580,14 @@ await channel.action("delete_message", {
 - `thread_id` becomes `message_thread_id`; `reply_to` uses `reply_parameters` with
   `allow_sending_without_reply=False`. Invalid or missing Telegram targets fail;
   the connector never falls back to another thread or sends without the reply.
-- Outbound attachments and nonempty send metadata are explicitly unsupported.
-  There are no implicit uploads, keyboards, formatting or arbitrary API options.
+- `files` from a `ChannelSend` are uploaded once each as multipart requests:
+  JPEG/PNG use `sendPhoto`, everything else uses `sendDocument`, and the text
+  becomes the caption when it fits Telegram's 1024 UTF-16 unit limit (longer text
+  is sent as its own message first). Files are capped at **20 MiB** each and three
+  per send; empty files, oversized files, and transport references are rejected
+  before any HTTP. Uploads are never retried.
+- Nonempty send metadata is explicitly unsupported. There are no implicit uploads,
+  keyboards, formatting or arbitrary API options.
 - `edit_message`: exactly `destination`, `message_id`, `text`; calls `editMessageText`.
   `delete_message`: exactly `destination`, `message_id`; calls `deleteMessage`.
   All fields are strings. Unknown/missing fields and actions are rejected. Actions

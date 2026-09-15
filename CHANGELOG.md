@@ -2,6 +2,12 @@
 
 ## 0.1.0
 
+- Advertise `send_files` and upload `ChannelSend.files` once each: JPEG/PNG as
+  `sendPhoto`, everything else as `sendDocument`, with the text as a caption when
+  it fits Telegram's 1024-unit limit and a separate message otherwise. Files are
+  capped at 20 MiB each and three per send; empty, oversized, and reference-only
+  attachments are rejected before HTTP, and multipart uploads are never retried.
+
 - Advertise `fetch_attachment` and download referenced Telegram files on host
   request: one `getFile` plus one authenticated byte download, capped at
   Telegram's 20 MiB bot limit, accepting only issued `telegram:file:` references,

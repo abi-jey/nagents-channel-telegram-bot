@@ -70,6 +70,7 @@ class TelegramServer:
     idle: asyncio.Event = field(default_factory=asyncio.Event)
     files: dict[str, bytes] = field(default_factory=dict)
     downloads: list[str] = field(default_factory=list)
+    uploads: list[tuple[str, list[tuple[str, str, str, bytes]]]] = field(default_factory=list)
 
     async def serve_file(self, request: web.Request) -> web.StreamResponse:
         assert request.match_info["token"] == TOKEN
@@ -83,6 +84,17 @@ class TelegramServer:
     async def handle(self, request: web.Request) -> web.StreamResponse:
         assert request.match_info["token"] == TOKEN
         method = request.match_info["method"]
+        if request.headers.get("Content-Type", "").startswith("multipart/form-data"):
+            post = await request.post()
+            fields = {key: value for key, value in post.items() if isinstance(value, str)}
+            uploaded = [
+                (key, value.filename or "", value.content_type or "", value.file.read())
+                for key, value in post.items()
+                if isinstance(value, web.FileField)
+            ]
+            self.uploads.append((method, uploaded))
+            self.requests.append((method, object_value(json_value(fields))))
+            return ok(message(900, chat_id=int(fields["chat_id"]), sender_id=BOT_ID))
         raw: object = await request.json()
         payload = object_value(json_value(raw))
         self.requests.append((method, payload))
