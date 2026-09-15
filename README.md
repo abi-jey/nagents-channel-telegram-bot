@@ -490,9 +490,18 @@ to execute automatically.
 Photos (largest area), documents, audio, voice, video, video notes, animations and
 stickers become `ChannelAttachment` references such as `telegram:file:<file_id>`.
 MIME type, filename, file size and available Telegram file/dimension/duration
-metadata are included. Animations are not duplicated as documents. References are
-bot-scoped; no `getFile`, download, transcription, execution, or credential-bearing
-file URL is produced. Albums arrive as individual updates sharing `media_group_id`.
+metadata are included. Sender display name, username, chat type and message time
+are mapped to the generic presentation fields the host formats into model context.
+Animations are not duplicated as documents. Albums arrive as individual updates
+sharing `media_group_id`.
+
+The connector advertises `fetch_attachment`. When a host asks for a referenced
+file to give the model, the connector calls `getFile` and downloads the bytes once,
+within Telegram's 20 MiB bot limit: only references it issued (`telegram:file:`)
+are accepted, `getFile` paths are validated against traversal, redirects stay off,
+and failures expose neither the token nor the file URL. The host remains
+responsible for allowlisting types and capping what reaches the model; the
+connector never transcribes, executes, or logs attachment content.
 
 The following are deliberately discarded and acknowledged by a subsequent poll:
 

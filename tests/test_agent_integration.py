@@ -1,8 +1,6 @@
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import cast
 
 import pytest
 from nagents import Agent
@@ -29,6 +27,23 @@ from .test_admission import private_message
 from .test_receive import cancel
 
 
+def header_fields(content: str) -> dict[str, str]:
+    """Read the trusted header of a formatted inbound channel message."""
+    header, _, _ = content.partition("\n\n")
+    stamp, separator, rest = header.partition("] ")
+    if stamp.startswith("[") and separator:
+        header = rest
+    labels = {"user": "sender_id", "chat": "conversation_id", "message": "message_id", "reply": "reply_to"}
+    fields: dict[str, str] = {}
+    for field in [part.strip() for part in header.split(" · ")]:
+        label, _, value = field.partition(" ")
+        if label in ("user", "chat", "message", "reply", "thread"):
+            fields[labels.get(label, "thread_id")] = value
+        elif "channel" not in fields:
+            fields["channel"] = field
+    return fields
+
+
 @pytest.mark.parametrize("explicit_send", [False, True])
 async def test_shared_agent_session_local_final_and_durable_restart_dedup(
     server: TelegramServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_send: bool
@@ -42,11 +57,11 @@ async def test_shared_agent_session_local_final_and_durable_restart_dedup(
         assert isinstance(user_message.content, str)
         sessions.append(session_id)
         if explicit_send and len(sessions) == 1:
-            envelope = cast("dict[str, ChannelValue]", json.loads(user_message.content.split("\n", 1)[1]))
+            envelope = header_fields(user_message.content)
             assert envelope["message_id"] == "100"
-            assert envelope["reply_to"] == "10"
-            metadata = envelope["metadata"]
-            assert isinstance(metadata, dict) and metadata["in_reply_to"] == "9"
+            assert envelope["reply_to"] == "10" and envelope["thread_id"] == "42"
+            assert "JSON envelope" not in user_message.content
+            assert "metadata" not in user_message.content
             result = await self.tool_executor.execute(
                 ToolCall(
                     id="explicit-call",
@@ -122,13 +137,13 @@ async def test_user_private_filters_gate_real_agent_inbox_and_model_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    envelopes: list[dict[str, ChannelValue]] = []
+    envelopes: list[dict[str, str]] = []
     observed: list[ChannelEvent] = []
     finished = asyncio.Event()
 
     async def offline_run(self: Agent, user_message: Message, session_id: str, user_id: str) -> AsyncIterator[Event]:
         assert isinstance(user_message.content, str)
-        envelopes.append(cast("dict[str, ChannelValue]", json.loads(user_message.content.split("\n", 1)[1])))
+        envelopes.append(header_fields(user_message.content))
         yield DoneEvent(final_text="Local result", session_id=session_id)
 
     async def observe(event: ChannelEvent) -> None:

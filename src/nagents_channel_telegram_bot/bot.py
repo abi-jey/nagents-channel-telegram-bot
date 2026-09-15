@@ -12,6 +12,7 @@ from typing import Self
 from nagents.channels import Channel
 from nagents.channels import ChannelAction
 from nagents.channels import ChannelActivity
+from nagents.channels import ChannelAttachment
 from nagents.channels import ChannelCommand
 from nagents.channels import ChannelDelivery
 from nagents.channels import ChannelError
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 _POLL_BACKOFF = 1.0
 _POLL_BACKOFF_MAX = 60.0
+_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 
 class TelegramBot(Channel):
@@ -53,7 +55,7 @@ class TelegramBot(Channel):
     """
 
     description = "Telegram bot: receive chat events; explicitly send, edit, or delete plain-text messages."
-    capabilities = ("receive", "send_text", "commands", "typing")
+    capabilities = ("receive", "send_text", "commands", "typing", "fetch_attachment")
     actions = (
         ChannelAction(
             name="edit_message",
@@ -406,6 +408,33 @@ class TelegramBot(Channel):
             if result is not True:
                 raise ChannelError("Telegram did not confirm deletion", outcome_unknown=True)
         return {"message_id": message_id, "destination": destination, "ok": True}
+
+    async def fetch_attachment(self, attachment: ChannelAttachment) -> tuple[bytes, str]:
+        """Download one referenced Telegram file for model input.
+
+        The host caps and allowlists what reaches the model; this method only
+        performs the authenticated ``getFile`` and byte download within Telegram's
+        20 MiB bot limit and refuses references it did not issue.
+        """
+        self._require_open()
+        if not isinstance(attachment, ChannelAttachment):
+            raise ChannelError("fetch_attachment requires a ChannelAttachment")
+        prefix = "telegram:file:"
+        file_id = attachment.reference.removeprefix(prefix) if isinstance(attachment.reference, str) else ""
+        if not attachment.reference.startswith(prefix) or re.fullmatch(r"[A-Za-z0-9_-]{1,256}", file_id) is None:
+            raise ChannelError("Unsupported Telegram attachment reference")
+        if attachment.size > _MAX_ATTACHMENT_BYTES:
+            raise ChannelError("Telegram attachment exceeds the download limit")
+        file = object_value(await self._transport.request("getFile", {"file_id": file_id}))
+        file_path = file.get("file_path")
+        if not isinstance(file_path, str) or not file_path:
+            raise ChannelError("Telegram did not return a downloadable file path")
+        size = file.get("file_size")
+        if type(size) is int and size > _MAX_ATTACHMENT_BYTES:
+            raise ChannelError("Telegram attachment exceeds the download limit")
+        data = await self._transport.download(file_path, limit=_MAX_ATTACHMENT_BYTES)
+        media_type = attachment.media_type
+        return data, media_type if isinstance(media_type, str) and media_type else "application/octet-stream"
 
     async def close(self) -> None:
         """Stop all typing and release HTTP after the host stops its listen task."""
