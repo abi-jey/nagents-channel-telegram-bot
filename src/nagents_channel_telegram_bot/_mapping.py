@@ -50,6 +50,14 @@ def _photo_area(value: ChannelValue) -> int:
     return integer(photo.get("width")) * integer(photo.get("height"))
 
 
+def _profile(value: ChannelValue) -> tuple[str, str]:
+    """Return the display name and username for a Telegram User or Chat object."""
+    if not isinstance(value, dict):
+        return "", ""
+    name = " ".join(part for part in (_string(value.get("first_name")), _string(value.get("last_name"))) if part)
+    return name or _string(value.get("title")), _string(value.get("username"))
+
+
 def _entities(value: ChannelValue) -> ChannelValue:
     if not isinstance(value, list):
         return None
@@ -201,6 +209,12 @@ def map_update(
         sender_id = chat_id
     if not sender_id or sender_id == "0":
         raise ChannelError("Telegram returned an invalid sender")
+    profile: ChannelValue = sender_chat if isinstance(sender_chat, dict) else sender
+    if not isinstance(profile, dict) and kind in ("channel_post", "edited_channel_post"):
+        profile = chat
+    sender_name, sender_username = _profile(profile)
+    date = message.get("date")
+    sent_at = float(date) if type(date) is int else 0.0
     metadata: dict[str, ChannelValue] = {
         "update_id": integer(update.get("update_id"), minimum=0),
         "telegram_message_id": str(telegram_id),
@@ -251,5 +265,9 @@ def map_update(
             event_type=kind,
             attachments=attachments,
             metadata=metadata,
+            sent_at=sent_at,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            conversation_type=_string(chat.get("type")),
         ),
     )

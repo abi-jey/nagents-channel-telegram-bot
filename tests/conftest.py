@@ -68,6 +68,17 @@ class TelegramServer:
     )
     polls: asyncio.Queue[dict[str, ChannelValue]] = field(default_factory=asyncio.Queue)
     idle: asyncio.Event = field(default_factory=asyncio.Event)
+    files: dict[str, bytes] = field(default_factory=dict)
+    downloads: list[str] = field(default_factory=list)
+
+    async def serve_file(self, request: web.Request) -> web.StreamResponse:
+        assert request.match_info["token"] == TOKEN
+        path = request.match_info["path"]
+        self.downloads.append(path)
+        body = self.files.get(path)
+        if body is None:
+            return web.Response(status=404)
+        return web.Response(body=body, content_type="application/octet-stream")
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         assert request.match_info["token"] == TOKEN
@@ -107,6 +118,7 @@ async def server() -> AsyncIterator[TelegramServer]:
     fake = TelegramServer()
     app = web.Application()
     app.router.add_post("/bot{token}/{method}", fake.handle)
+    app.router.add_get("/file/bot{token}/{path:.*}", fake.serve_file)
     runner = web.AppRunner(app, access_log=None, shutdown_timeout=0.01)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 import aiohttp
 from nagents.channels import ChannelError
@@ -13,6 +14,7 @@ _READ_METHODS = frozenset({"getMe", "getUpdates"})
 _MAX_BODY = 8 * 1024 * 1024
 _MAX_RETRIES = 3
 _MAX_RETRY_DELAY = 60
+_FILE_PATH = re.compile(r"[A-Za-z0-9_./-]{1,512}\Z")
 
 
 class _RequestError(ChannelError):
@@ -54,6 +56,30 @@ class Transport:
                     raise
                 await asyncio.sleep(max(error.retry_after, float(2**attempt)))
         raise AssertionError("Unreachable retry state")
+
+    async def download(self, file_path: str, *, limit: int) -> bytes:
+        """Fetch a ``getFile`` path once; reads are side-effect free, so failures stay sanitized."""
+        session = self._session
+        if session is None or session.closed:
+            raise ChannelError("Telegram channel is not open")
+        if not _FILE_PATH.fullmatch(file_path) or ".." in file_path.split("/"):
+            raise ChannelError("Telegram returned an invalid file path")
+        try:
+            async with session.get(
+                f"{self._origin}/file/bot{self._token}/{file_path}",
+                timeout=aiohttp.ClientTimeout(total=60),
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise ChannelError(f"Telegram file download failed (HTTP {response.status})")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > limit:
+                        raise ChannelError("Telegram attachment exceeds the download limit")
+                return bytes(body)
+        except (aiohttp.ClientError, TimeoutError, OSError):
+            raise ChannelError("Telegram file download failed") from None
 
     async def _once(self, method: str, payload: dict[str, ChannelValue], *, timeout: int, safe: bool) -> ChannelValue:
         session = self._session

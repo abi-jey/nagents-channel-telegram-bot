@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Abbas Jafari"}]
-dependencies = ["nagents>=0.6.0a24202,<0.8", "aiohttp>=3.11,<4"]
+dependencies = ["nagents>=0.8.0,<0.9", "aiohttp>=3.11,<4"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: AsyncIO",
