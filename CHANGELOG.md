@@ -2,6 +2,17 @@
 
 ## 0.1.0
 
+- Replace run lifecycle chat messages with the existing typing indicator:
+  `run_started`/`completed`/`failed`/`cancelled` no longer post text. Compact
+  tool notices and the approval prompt remain the only rendered execution text.
+- Opt-in `chat_approvals`: render the approval prompt with one-shot
+  Approve/Deny inline buttons and expose the tap through `Channel.approval`.
+  A tap resolves only against the host's live pending approval and its
+  owning-chat policy; recognized-but-stale taps are consumed, never model input.
+- Advertise `approvals` and require Nagents `>=0.10.0,<0.11`: the
+  `ChannelApproval` contract and `Channel.approval` hook this connector uses
+  first ship in the 0.10 core line.
+
 - Advertise `send_files` and upload `ChannelSend.files` once each: JPEG/PNG as
   `sendPhoto`, everything else as `sendDocument`, with the text as a caption when
   it fits Telegram's 1024-unit limit and a separate message otherwise. Files are
