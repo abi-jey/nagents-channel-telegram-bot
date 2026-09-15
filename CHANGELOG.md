@@ -15,8 +15,8 @@
   Inbound events also populate `sent_at`, `sender_name`, `sender_username` and
   `conversation_type` for the host's formatted model context.
 
-- Require Nagents `>=0.8.0,<0.9`: the outbound attachment and presentation-field
-  additions this connector uses first ship in the 0.8 core line.
+- Require Nagents `>=0.9.0,<0.10`: the outbound attachment and presentation-field
+  additions this connector uses first ship in the 0.9 core line.
 
 - Keep long polling alive across transient outages: when one `getUpdates`
   exhausts the transport's per-request retries, the listener backs off from one
