@@ -143,32 +143,35 @@ async def test_default_closed_and_private_chat_gate(execution: tuple[TelegramBot
     bot, fake = execution
     bot._execution_notifications = False
     await bot.on_event(event("run_started"))
+    await bot.on_event(event("waiting_for_approval"))
     assert not fake.texts()
     bot._execution_notifications = True
     bot._allowed_chats = frozenset({"7"})
     await bot.on_event(event("run_started"))
+    await bot.on_event(event("waiting_for_approval"))
     bot._allowed_chats = frozenset()
     bot._private_chats_only = True
     await bot.on_event(event("run_started"))
+    await bot.on_event(event("waiting_for_approval"))
     assert not fake.texts()
     await bot.on_event(event("run_started", chat="7"))
-    assert fake.texts() == ["⏳ Working"]
+    await bot.on_event(event("waiting_for_approval", chat="7"))
+    assert fake.texts() == ["⏸ Waiting for approval"]
     await bot.close()
     await bot.on_event(event("run_started", chat="7", run="closed"))
-    assert fake.texts() == ["⏳ Working"]
+    await bot.on_event(event("waiting_for_approval", chat="7", run="closed"))
+    assert fake.texts() == ["⏸ Waiting for approval"]
 
 
-async def test_states_do_not_share_tool_rate_limit_and_plain_text_payload(
+async def test_lifecycle_states_never_post_text_and_only_tool_and_approval_do(
     execution: tuple[TelegramBot, FakeTransport],
 ) -> None:
     bot, fake = execution
     for phase in ("run_started", "tool_requested", "waiting_for_approval", "completed"):
         await dispatch_channel_execution_event(bot, event(phase, thread="42"))
     assert fake.texts() == [
-        "⏳ Working",
         "🔧 read_file (requested)\n  path: README.md\n  command: ls -l",
         "⏸ Waiting for approval",
-        "✅ Completed",
     ]
     assert not bot._typing._entries
     for method, payload in fake.calls:
@@ -205,10 +208,10 @@ async def test_terminal_status_no_output_blobs_and_stale_terminal_cannot_stop_ne
     await bot.on_event(event("run_started", run="old"))
     await bot.on_event(event("run_started", run="new"))
     await bot.on_event(event(phase, run="old"))
-    assert ("-100", "") in bot._typing._entries and fake.texts() == ["⏳ Working", "⏳ Working"]
+    assert ("-100", "") in bot._typing._entries and not fake.texts()
     await bot.on_event(event(phase, run="new"))
     await bot.on_event(event(phase, run="new"))
-    assert len(fake.texts()) == 3 and not bot._typing._entries
+    assert not fake.texts() and not bot._typing._entries
 
 
 async def test_run_owner_correlation_never_retargets_or_broadcasts(
@@ -224,13 +227,13 @@ async def test_run_owner_correlation_never_retargets_or_broadcasts(
         event("run_started", chat="200"),
     ):
         await bot.on_event(altered)
-    assert fake.texts() == ["⏳ Working"]
+    assert fake.texts() == []
     await bot.on_event(event("tool_requested"))
     fake.now += 3
     await bot.on_event(event("tool_requested", activation="child"))
-    assert len(fake.texts()) == 3
+    assert len(fake.texts()) == 2
     await bot.on_event(event("tool_requested", activation="child"))
-    assert len(fake.texts()) == 3
+    assert len(fake.texts()) == 2
 
 
 async def test_tool_rate_budget_and_dedup_are_bounded_but_approval_terminal_reserved(
@@ -245,8 +248,8 @@ async def test_tool_rate_budget_and_dedup_are_bounded_but_approval_terminal_rese
     assert len(run.seen) == _execution.MAX_SEEN and run.tools == _execution.MAX_TOOL_NOTICES
     await bot.on_event(event("waiting_for_approval"))
     await bot.on_event(event("completed"))
-    assert len(fake.texts()) == _execution.MAX_TOOL_NOTICES + 3
-    assert fake.texts()[-2:] == ["⏸ Waiting for approval", "✅ Completed"]
+    assert len(fake.texts()) == _execution.MAX_TOOL_NOTICES + 1
+    assert fake.texts()[-1] == "⏸ Waiting for approval"
 
 
 async def test_immediate_tool_suppression_not_replayed_and_optional_status_only(
@@ -258,7 +261,7 @@ async def test_immediate_tool_suppression_not_replayed_and_optional_status_only(
     await bot.on_event(event("tool_completed"))
     fake.now += 3
     await bot.on_event(event("tool_completed"))
-    assert len(fake.texts()) == 2
+    assert len(fake.texts()) == 1
     await bot.on_event(replace(event("tool_completed", call="other"), tool_failed=True))
     assert fake.texts()[-1] == "🔧 read_file (failed)"
 
@@ -271,7 +274,7 @@ async def test_transport_tools_do_not_recursively_notify(
     await bot.on_event(event("run_started"))
     await bot.on_event(replace(event("tool_requested"), tool_name=tool))
     await bot.on_event(replace(event("tool_completed"), tool_name=tool))
-    assert fake.texts() == ["⏳ Working"] and bot._typing._entries
+    assert fake.texts() == [] and bot._typing._entries
 
 
 def test_clean_short_paths_commands_unicode_and_no_parse_markup() -> None:
@@ -372,14 +375,15 @@ async def test_hook_failure_does_not_retry_or_break_typing(
 ) -> None:
     bot, fake = execution
     monkeypatch.setattr(_execution, "SEND_TIMEOUT", 0.03)
+    await bot.on_event(event("run_started"))
     fake.failure = failure
     fake.block = failure == "timeout"
-    await dispatch_channel_execution_event(bot, event("run_started"))
+    await dispatch_channel_execution_event(bot, event("tool_requested"))
     assert fake.exited.is_set() and bot._typing._entries
-    await bot.on_event(event("run_started"))
+    await bot.on_event(event("tool_requested"))
     assert len(fake.texts()) == 1
     await dispatch_channel_execution_event(bot, event("failed"))
-    assert len(fake.texts()) == 2 and not bot._typing._entries
+    assert len(fake.texts()) == 1 and not bot._typing._entries
     assert "opaque-test-error" not in caplog.text
 
 
@@ -387,14 +391,17 @@ async def test_rate_limit_cools_notifications_without_stopping_typing(
     execution: tuple[TelegramBot, FakeTransport],
 ) -> None:
     bot, fake = execution
-    fake.failure = "rate"
     await bot.on_event(event("run_started"))
+    fake.failure = "rate"
+    await bot.on_event(event("tool_requested", call="call-rate"))
     fake.failure = ""
-    await bot.on_event(event("tool_requested"))
+    await bot.on_event(event("tool_requested", call="call-cooled"))
     assert len(fake.texts()) == 1 and bot._typing._entries
     fake.now += 11
+    await bot.on_event(event("tool_requested", call="call-warm"))
+    assert len(fake.texts()) == 2 and fake.texts()[-1].startswith("🔧 read_file (requested)")
     await bot.on_event(event("completed"))
-    assert fake.texts()[-1] == "✅ Completed" and not bot._typing._entries
+    assert not bot._typing._entries
 
 
 async def test_close_joins_inflight_hook_and_terminal_cancellation_cleans_typing(
@@ -402,16 +409,20 @@ async def test_close_joins_inflight_hook_and_terminal_cancellation_cleans_typing
 ) -> None:
     bot, fake = execution
     await bot.on_event(event("run_started"))
+    assert bot._typing._entries
     fake.entered.clear()
     fake.exited.clear()
     fake.block = True
-    task = asyncio.create_task(bot.on_event(event("cancelled")))
+    task = asyncio.create_task(bot.on_event(event("tool_requested")))
     await asyncio.wait_for(fake.entered.wait(), 2)
-    assert not bot._typing._entries
+    assert bot._typing._entries
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert fake.exited.is_set()
+    fake.block = False
+    await bot.on_event(event("cancelled"))
+    assert not bot._typing._entries
     await bot.close()
     assert not bot._execution._runs and not bot._typing._entries
 
@@ -422,8 +433,9 @@ async def test_close_waits_for_inflight_event_before_releasing_transport(
     bot, fake = execution
     session = bot._transport._session
     assert session is not None
+    await bot.on_event(event("run_started"))
     fake.block = True
-    producer = asyncio.create_task(bot.on_event(event("run_started")))
+    producer = asyncio.create_task(bot.on_event(event("tool_requested")))
     await asyncio.wait_for(fake.entered.wait(), 2)
     closing = asyncio.create_task(bot.close())
     await asyncio.sleep(0)

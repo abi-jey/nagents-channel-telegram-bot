@@ -44,14 +44,13 @@ _CREDENTIAL = re.compile(
     re.I,
 )
 _TRANSPORT = frozenset({"channel_send", "channel_list", "channel_action"})
-_STATES = {
-    "run_started": "⏳ Working",
-    "waiting_for_approval": "⏸ Waiting for approval",
-    "completed": "✅ Completed",
-    "failed": "❌ Failed",
-    "cancelled": "⏹ Cancelled",
-}
+_APPROVAL_NOTICE = "⏸ Waiting for approval"
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
+# Lifecycle phases drive the typing indicator only; no chat message is posted for
+# them. Tool notices and the approval prompt are the only rendered execution text.
+_PHASES = frozenset(
+    {"run_started", "tool_requested", "tool_completed", "waiting_for_approval", "completed", "failed", "cancelled"}
+)
 
 
 def _units(value: str) -> int:
@@ -170,7 +169,7 @@ class ExecutionNotifications:
             if not self._accepting:
                 return
             phase = event.phase
-            if phase not in (*_STATES, "tool_requested", "tool_completed"):
+            if phase not in _PHASES:
                 return
             if (
                 any(
@@ -211,34 +210,33 @@ class ExecutionNotifications:
             if terminal:
                 self._retire(run)  # Commit completion before cancellable control/send.
             await self._typing.update((chat, thread), active=not terminal, session_id=run.session)
-            if phase in ("tool_requested", "tool_completed", "waiting_for_approval"):
-                if phase == "waiting_for_approval":
-                    approval = (event.activation_id, event.call_id)
-                    if approval in run.waiting or run.approvals >= MAX_APPROVAL_NOTICES:
-                        return
-                    run.waiting.add(approval)
-                    run.approvals += 1
-                    text = _STATES[phase]
-                else:
-                    key = (phase, event.activation_id, event.call_id)
-                    if key in run.seen or len(run.seen) >= MAX_SEEN:
-                        return
-                    run.seen.add(key)
-                    if run.tools >= MAX_TOOL_NOTICES or monotonic() < run.next_tool:
-                        return
-                    text = tool_text(
-                        event.tool_name,
-                        event.tool_arguments,
-                        self._token,
-                        completed=phase == "tool_completed",
-                        failed=event.tool_failed is True,
-                    )
-                    if not text:
-                        return
-                    run.tools += 1
-                    run.next_tool = monotonic() + TOOL_INTERVAL
+            if phase == "waiting_for_approval":
+                approval = (event.activation_id, event.call_id)
+                if approval in run.waiting or run.approvals >= MAX_APPROVAL_NOTICES:
+                    return
+                run.waiting.add(approval)
+                run.approvals += 1
+                text = _APPROVAL_NOTICE
+            elif phase in ("tool_requested", "tool_completed"):
+                key = (phase, event.activation_id, event.call_id)
+                if key in run.seen or len(run.seen) >= MAX_SEEN:
+                    return
+                run.seen.add(key)
+                if run.tools >= MAX_TOOL_NOTICES or monotonic() < run.next_tool:
+                    return
+                text = tool_text(
+                    event.tool_name,
+                    event.tool_arguments,
+                    self._token,
+                    completed=phase == "tool_completed",
+                    failed=event.tool_failed is True,
+                )
+                if not text:
+                    return
+                run.tools += 1
+                run.next_tool = monotonic() + TOOL_INTERVAL
             else:
-                text = _STATES[phase]
+                return  # Lifecycle phases only move the typing indicator.
             await self._notify(run, text)
 
     async def _notify(self, run: _Run, text: str) -> None:
