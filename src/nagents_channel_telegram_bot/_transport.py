@@ -57,6 +57,60 @@ class Transport:
                 await asyncio.sleep(max(error.retry_after, float(2**attempt)))
         raise AssertionError("Unreachable retry state")
 
+    async def request_multipart(
+        self,
+        method: str,
+        fields: dict[str, str],
+        files: tuple[tuple[str, str, str, bytes], ...],
+        *,
+        timeout: int = 60,
+    ) -> ChannelValue:
+        """Upload one multipart request without retries; mutations have unknown outcomes."""
+        session = self._session
+        if session is None or session.closed:
+            raise ChannelError("Telegram channel is not open")
+        form = aiohttp.FormData()
+        for key, value in fields.items():
+            form.add_field(key, value)
+        for field_name, filename, content_type, data in files:
+            form.add_field(field_name, data, filename=filename, content_type=content_type)
+        try:
+            async with session.post(
+                f"{self._origin}/bot{self._token}/{method}",
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+            ) as response:
+                status = response.status
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    body.extend(chunk)
+                    if len(body) > _MAX_BODY:
+                        raise _RequestError("Telegram request failed", retryable=False, outcome_unknown=True)
+                try:
+                    decoded: object = json.loads(body)
+                    result = json_value(decoded)
+                except (ValueError, RecursionError):
+                    raise _RequestError("Telegram request failed", retryable=False, outcome_unknown=True) from None
+                if not isinstance(result, dict):
+                    raise _RequestError("Telegram request failed", retryable=False, outcome_unknown=True)
+                if status >= 400 or result.get("ok") is False:
+                    code = result.get("error_code")
+                    if status < 400:
+                        if type(code) is not int or not 400 <= code <= 599:
+                            raise _RequestError("Telegram request failed", retryable=False, outcome_unknown=True)
+                        status = code
+                    self._raise_api_error(status, 0, safe=False)
+                if not 200 <= status < 300 or result.get("ok") is not True or "result" not in result:
+                    raise _RequestError("Telegram request failed", retryable=False, outcome_unknown=True)
+                return result["result"]
+        except _RequestError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError, ValueError, RecursionError):
+            raise _RequestError(
+                "Telegram request failed or returned an invalid response", retryable=False, outcome_unknown=True
+            ) from None
+
     async def download(self, file_path: str, *, limit: int) -> bytes:
         """Fetch a ``getFile`` path once; reads are side-effect free, so failures stay sanitized."""
         session = self._session

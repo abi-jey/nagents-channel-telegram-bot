@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from dataclasses import replace
@@ -16,6 +17,7 @@ from nagents.channels import ChannelAttachment
 from nagents.channels import ChannelCommand
 from nagents.channels import ChannelDelivery
 from nagents.channels import ChannelError
+from nagents.channels import ChannelFile
 from nagents.channels import ChannelMessage
 from nagents.channels import ChannelReceiver
 from nagents.channels import ChannelSend
@@ -44,6 +46,9 @@ if TYPE_CHECKING:
 _POLL_BACKOFF = 1.0
 _POLL_BACKOFF_MAX = 60.0
 _MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_MAX_OUTBOUND_FILES = 3
+_MAX_CAPTION_UNITS = 1024
+_PHOTO_TYPES = frozenset({"image/jpeg", "image/png"})
 
 
 class TelegramBot(Channel):
@@ -55,7 +60,7 @@ class TelegramBot(Channel):
     """
 
     description = "Telegram bot: receive chat events; explicitly send, edit, or delete plain-text messages."
-    capabilities = ("receive", "send_text", "commands", "typing", "fetch_attachment")
+    capabilities = ("receive", "send_text", "send_files", "commands", "typing", "fetch_attachment")
     actions = (
         ChannelAction(
             name="edit_message",
@@ -352,12 +357,20 @@ class TelegramBot(Channel):
     async def send(self, message: ChannelSend) -> ChannelDelivery:
         self._require_open()
         destination = identifier(message.destination, "destination")
-        content = text(message.text)
+        if not isinstance(message.text, str):
+            raise ChannelError("text must be a string")
+        content = text(message.text) if message.text else ""
         if not isinstance(message.attachments, tuple) or message.attachments:
-            raise ChannelError("Outbound attachments are unsupported; inbound files are metadata-only references")
+            raise ChannelError("Outbound transport references are unsupported; send workspace files instead")
+        if not isinstance(message.files, tuple):
+            raise ChannelError("files must be a tuple of ChannelFile")
+        if not content and not message.files:
+            raise ChannelError("A channel message needs text or an attachment")
+        if len(message.files) > _MAX_OUTBOUND_FILES:
+            raise ChannelError("Too many outbound attachments")
         if not isinstance(message.metadata, dict) or message.metadata:
             raise ChannelError("Outbound metadata options are unsupported")
-        payload: dict[str, ChannelValue] = {"chat_id": destination, "text": content}
+        payload: dict[str, ChannelValue] = {"chat_id": destination}
         for value, field in ((message.thread_id, "thread_id"), (message.reply_to, "reply_to")):
             if not isinstance(value, str):
                 raise ChannelError(f"{field} must be a decimal ID string or an empty string")
@@ -367,11 +380,57 @@ class TelegramBot(Channel):
                     payload["message_thread_id"] = number
                 else:
                     payload["reply_parameters"] = {"message_id": number, "allow_sending_without_reply": False}
-        result = await self._transport.request("sendMessage", payload)
-        remote_id = self._confirmed_message(result, destination)
+        if not message.files:
+            result = await self._transport.request("sendMessage", {**payload, "text": content})
+            remote_id = self._confirmed_message(result, destination)
+            return ChannelDelivery(
+                message_ids=(remote_id,),
+                metadata={"destination": destination, "thread_id": message.thread_id, "reply_to": message.reply_to},
+            )
+        return await self._send_files(destination, content, payload, message.files)
+
+    async def _send_files(
+        self, destination: str, content: str, payload: dict[str, ChannelValue], files: tuple[ChannelFile, ...]
+    ) -> ChannelDelivery:
+        """Upload files once each; photo-capable images use sendPhoto, everything else sendDocument.
+
+        Telegram captions are limited to 1024 UTF-16 code units, so longer text is sent
+        as its own message first and the files follow without a caption.
+        """
+        fields = {key: str(value) for key, value in payload.items() if key != "chat_id" and key != "reply_parameters"}
+        reply = payload.get("reply_parameters")
+        if isinstance(reply, dict):
+            fields["reply_parameters"] = json.dumps(reply)
+        caption = content if len(content.encode("utf-16-le")) // 2 <= _MAX_CAPTION_UNITS else ""
+        if content and not caption:
+            result = await self._transport.request("sendMessage", {**payload, "text": content})
+            self._confirmed_message(result, destination)
+        message_ids: list[str] = []
+        for index, file in enumerate(files):
+            if not isinstance(file, ChannelFile):
+                raise ChannelError("files must be a tuple of ChannelFile")
+            if not isinstance(file.data, bytes) or not file.data:
+                raise ChannelError("Outbound attachment is empty")
+            if len(file.data) > _MAX_ATTACHMENT_BYTES:
+                raise ChannelError("Telegram attachment exceeds the upload limit")
+            name = file.filename or "file"
+            media_type = file.media_type or "application/octet-stream"
+            method, field = ("sendPhoto", "photo") if media_type in _PHOTO_TYPES else ("sendDocument", "document")
+            request_fields = dict(fields)
+            request_fields["chat_id"] = destination
+            if index == 0 and caption:
+                request_fields["caption"] = caption
+            result = await self._transport.request_multipart(
+                method, request_fields, ((field, name, media_type, file.data),)
+            )
+            message_ids.append(self._confirmed_message(result, destination))
         return ChannelDelivery(
-            message_ids=(remote_id,),
-            metadata={"destination": destination, "thread_id": message.thread_id, "reply_to": message.reply_to},
+            message_ids=tuple(message_ids),
+            metadata={
+                "destination": destination,
+                "thread_id": str(payload.get("message_thread_id", "")),
+                "reply_to": "",
+            },
         )
 
     @staticmethod

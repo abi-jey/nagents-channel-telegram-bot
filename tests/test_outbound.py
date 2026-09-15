@@ -65,7 +65,7 @@ async def test_invalid_routing_never_falls_back(
 
 
 async def test_unsupported_outbound_options(bot: TelegramBot, server: TelegramServer) -> None:
-    with pytest.raises(ChannelError, match="attachments"):
+    with pytest.raises(ChannelError, match="references"):
         await bot.send(ChannelSend("-100", "hello", attachments=(ChannelAttachment("telegram:file:x"),)))
     with pytest.raises(ChannelError, match="metadata"):
         await bot.send(ChannelSend("-100", "hello", metadata={"parse_mode": "HTML"}))
