@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from dataclasses import field
+from typing import TYPE_CHECKING
 from typing import cast
 
 import pytest
@@ -24,6 +24,9 @@ from nagents_channel_telegram_bot._transport import Transport
 
 from .conftest import BOT_ID
 from .conftest import TOKEN
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @dataclass
@@ -136,7 +139,7 @@ async def test_deny_button_resolves_the_same_prompt(bot: tuple[TelegramBot, Fake
 
 
 async def test_only_reserved_callbacks_are_claimed(bot: tuple[TelegramBot, FakeTransport]) -> None:
-    channel, fake = bot
+    channel, _ = bot
     assert channel.approval(tap("menu:1")) is None
     assert channel.approval(tap(None)) is None
     assert channel.approval(ChannelMessage("1", "-100", "7", "plain")) is None
@@ -170,7 +173,7 @@ async def test_prompt_omits_buttons_when_policy_is_off(bot: tuple[TelegramBot, F
 
 
 async def test_handles_are_bounded_and_cleared_on_close(bot: tuple[TelegramBot, FakeTransport]) -> None:
-    channel, fake = bot
+    channel, _ = bot
     run = _execution._Run("session-a", "run-a", "-100", "")
     for index in range(_execution.MAX_HANDLES + 5):
         channel._execution._buttons(run, event("waiting_for_approval", call=f"call-{index}"))
