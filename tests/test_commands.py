@@ -45,8 +45,11 @@ def command_message(text: str) -> ChannelMessage:
         ("/new", ChannelCommand("new")),
         ("/new  Title with spaces 😀  ", ChannelCommand("new", "Title with spaces 😀")),
         ("/new\nA title", ChannelCommand("new", "A title")),
+        ("/compact", ChannelCommand("compact")),
+        ("/compact\n", ChannelCommand("compact")),
         ("/session@offline_bot main", ChannelCommand("session", "main")),
         ("/sessions@OFFLINE_BOT", ChannelCommand("sessions")),
+        ("/compact@offline_bot", ChannelCommand("compact")),
     ],
 )
 async def test_commands_parse_without_transport_or_session_io(
@@ -67,6 +70,7 @@ async def test_commands_parse_without_transport_or_session_io(
         "/unknown",
         "/SESSION",
         "/sessions extra",
+        "/compact extra",
         "/sessionish",
         "/session/main",
         "/session@other_bot main",

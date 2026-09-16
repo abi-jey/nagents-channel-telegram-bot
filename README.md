@@ -323,18 +323,22 @@ want the single shared identity shown above.
 | `/session ID` | `session` | The supplied ID |
 | `/session main`, `/session default`, `/session new` | `session` | The supplied host selector |
 | `/new` or `/new A title` | `new` | Empty or the trimmed title |
+| `/compact` | `compact` | Empty (the host compacts the bound session) |
 
 The host owns listing, creating, validating and reattaching sessions, including
 the meaning of `main`, `default`, and `new`. The connector never queries storage,
 changes a binding, or sends a command response itself. A standalone application
 can use this hook explicitly; parsing alone does not change its Agent session.
+`/compact` asks the host to compact that session's conversation history; the host
+performs the compaction work and reports the result, so the connector still sends
+nothing itself.
 
 Parsing is deliberately limited to **new `message` updates** with text at offset
 zero. Edits, channel posts, captions, callbacks and forwarded messages are not host
 commands. Recognized names are lowercase, followed by the end of the token or
-ASCII whitespace. `/sessions` takes no arguments; `/session` and `/new` preserve
-their argument text apart from surrounding whitespace. Unrecognized slash text
-returns `None`.
+ASCII whitespace. `/sessions` and `/compact` take no arguments; `/session` and
+`/new` preserve their argument text apart from surrounding whitespace.
+Unrecognized slash text returns `None`.
 
 When `entities` is present, parsing requires one matching `bot_command` entity at
 UTF-16 offset zero, with the exact command-token length and valid entity ranges.
