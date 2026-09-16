@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import secrets
+from collections import OrderedDict
 from dataclasses import dataclass
 from dataclasses import field
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from nagents.channels import ChannelApproval
 from nagents.channels import ChannelError
 
 from ._validation import identifier
 
 if TYPE_CHECKING:
     from nagents.channels import ChannelExecutionEvent
+    from nagents.channels import ChannelMessage
     from nagents.channels import ChannelValue
 
     from ._activity import Typing
@@ -26,10 +30,15 @@ MAX_RETIRED = 256
 MAX_TOOL_NOTICES = 8
 MAX_APPROVAL_NOTICES = 8
 MAX_SEEN = 128
+MAX_HANDLES = 64
 TOOL_INTERVAL = 2.0
 SEND_TIMEOUT = 1.0
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.:-]{0,63}")
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}")
+_HANDLE = re.compile(r"[A-Za-z0-9_-]{8,32}")
+_APPROVAL_PREFIX = "ngn:"
+_APPROVE = "✅ Approve"
+_DENY = "❌ Deny"
 _PRIVATE = re.compile(
     r"auth|cookie|credential|secret|token|password|passwd|passphrase|api.?key|private.?key|"
     r"text|content|body|message|prompt|reasoning|thinking|result|output|headers|environment",
@@ -44,14 +53,13 @@ _CREDENTIAL = re.compile(
     re.I,
 )
 _TRANSPORT = frozenset({"channel_send", "channel_list", "channel_action"})
-_STATES = {
-    "run_started": "⏳ Working",
-    "waiting_for_approval": "⏸ Waiting for approval",
-    "completed": "✅ Completed",
-    "failed": "❌ Failed",
-    "cancelled": "⏹ Cancelled",
-}
+_APPROVAL_NOTICE = "⏸ Waiting for approval"
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
+# Lifecycle phases drive the typing indicator only; no chat message is posted for
+# them. Tool notices and the approval prompt are the only rendered execution text.
+_PHASES = frozenset(
+    {"run_started", "tool_requested", "tool_completed", "waiting_for_approval", "completed", "failed", "cancelled"}
+)
 
 
 def _units(value: str) -> int:
@@ -124,6 +132,21 @@ def tool_text(name: object, arguments: object, token: str, *, completed: bool = 
         return ""  # Malformed plugin values never acquire a repr in Telegram/logs.
 
 
+def approval_text(name: object, token: str) -> str:
+    """Name the pending tool in an approval prompt, or fall back to a generic prompt."""
+    try:
+        if (
+            type(name) is str
+            and token not in name
+            and _CREDENTIAL.search(name) is None
+            and _NAME.fullmatch(name) is not None
+        ):
+            return f"⏸ Approve {name}?"
+    except Exception:
+        pass
+    return _APPROVAL_NOTICE
+
+
 @dataclass
 class _Run:
     session: str
@@ -138,13 +161,15 @@ class _Run:
 
 
 class ExecutionNotifications:
-    def __init__(self, transport: Transport, typing: Typing, token: str) -> None:
+    def __init__(self, transport: Transport, typing: Typing, token: str, *, approvals: bool = False) -> None:
         self._transport = transport
         self._typing = typing
         self._token = token
+        self._approvals = approvals
         self._runs: dict[str, _Run] = {}
         self._latest: dict[tuple[str, str], str] = {}
         self._retired: dict[str, None] = {}
+        self._handles: OrderedDict[str, tuple[str, str, str, str]] = OrderedDict()
         self._accepting = False
         self._lock = asyncio.Lock()
         self._retry_at = 0.0
@@ -170,7 +195,7 @@ class ExecutionNotifications:
             if not self._accepting:
                 return
             phase = event.phase
-            if phase not in (*_STATES, "tool_requested", "tool_completed"):
+            if phase not in _PHASES:
                 return
             if (
                 any(
@@ -211,42 +236,84 @@ class ExecutionNotifications:
             if terminal:
                 self._retire(run)  # Commit completion before cancellable control/send.
             await self._typing.update((chat, thread), active=not terminal, session_id=run.session)
-            if phase in ("tool_requested", "tool_completed", "waiting_for_approval"):
-                if phase == "waiting_for_approval":
-                    approval = (event.activation_id, event.call_id)
-                    if approval in run.waiting or run.approvals >= MAX_APPROVAL_NOTICES:
-                        return
-                    run.waiting.add(approval)
-                    run.approvals += 1
-                    text = _STATES[phase]
+            reply_markup: dict[str, ChannelValue] | None = None
+            if phase == "waiting_for_approval":
+                approval = (event.activation_id, event.call_id)
+                if approval in run.waiting or run.approvals >= MAX_APPROVAL_NOTICES:
+                    return
+                run.waiting.add(approval)
+                run.approvals += 1
+                if self._approvals:
+                    reply_markup = self._buttons(run, event)
+                    text = approval_text(event.tool_name, self._token)
                 else:
-                    key = (phase, event.activation_id, event.call_id)
-                    if key in run.seen or len(run.seen) >= MAX_SEEN:
-                        return
-                    run.seen.add(key)
-                    if run.tools >= MAX_TOOL_NOTICES or monotonic() < run.next_tool:
-                        return
-                    text = tool_text(
-                        event.tool_name,
-                        event.tool_arguments,
-                        self._token,
-                        completed=phase == "tool_completed",
-                        failed=event.tool_failed is True,
-                    )
-                    if not text:
-                        return
-                    run.tools += 1
-                    run.next_tool = monotonic() + TOOL_INTERVAL
+                    text = _APPROVAL_NOTICE
+            elif phase in ("tool_requested", "tool_completed"):
+                key = (phase, event.activation_id, event.call_id)
+                if key in run.seen or len(run.seen) >= MAX_SEEN:
+                    return
+                run.seen.add(key)
+                if run.tools >= MAX_TOOL_NOTICES or monotonic() < run.next_tool:
+                    return
+                text = tool_text(
+                    event.tool_name,
+                    event.tool_arguments,
+                    self._token,
+                    completed=phase == "tool_completed",
+                    failed=event.tool_failed is True,
+                )
+                if not text:
+                    return
+                run.tools += 1
+                run.next_tool = monotonic() + TOOL_INTERVAL
             else:
-                text = _STATES[phase]
-            await self._notify(run, text)
+                return  # Lifecycle phases only move the typing indicator.
+            await self._notify(run, text, reply_markup)
 
-    async def _notify(self, run: _Run, text: str) -> None:
+    def _buttons(self, run: _Run, event: ChannelExecutionEvent) -> dict[str, ChannelValue]:
+        handle = secrets.token_urlsafe(12)
+        self._handles[handle] = (run.chat, event.session_id, event.run_id, event.call_id)
+        while len(self._handles) > MAX_HANDLES:
+            self._handles.popitem(last=False)
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": _APPROVE, "callback_data": f"{_APPROVAL_PREFIX}a:{handle}"},
+                    {"text": _DENY, "callback_data": f"{_APPROVAL_PREFIX}d:{handle}"},
+                ]
+            ]
+        }
+
+    def approval(self, message: ChannelMessage) -> ChannelApproval | None:
+        """Resolve one Approve/Deny tap; recognized-but-stale taps are consumed, never model input."""
+        if not self._approvals:
+            return None
+        metadata = message.metadata
+        if message.event_type != "callback_query" or not isinstance(metadata, dict):
+            return None
+        callback = metadata.get("callback_query")
+        if not isinstance(callback, dict):
+            return None
+        data = callback.get("data")
+        if not isinstance(data, str) or not data.startswith(_APPROVAL_PREFIX):
+            return None
+        parts = data.split(":")
+        if len(parts) != 3 or parts[1] not in ("a", "d") or _HANDLE.fullmatch(parts[2]) is None:
+            return ChannelApproval()
+        identity = self._handles.get(parts[2])
+        if identity is None or identity[0] != message.conversation_id:
+            return ChannelApproval()
+        del self._handles[parts[2]]
+        return ChannelApproval(identity[0], identity[1], identity[2], identity[3], allow=parts[1] == "a")
+
+    async def _notify(self, run: _Run, text: str, reply_markup: dict[str, ChannelValue] | None = None) -> None:
         if monotonic() < self._retry_at or not self._accepting:
             return
         payload: dict[str, ChannelValue] = {"chat_id": run.chat, "text": text}
         if run.thread:
             payload["message_thread_id"] = int(run.thread)
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         try:
             async with asyncio.timeout(SEND_TIMEOUT):
                 await self._transport.request("sendMessage", payload, timeout=1)
@@ -263,3 +330,4 @@ class ExecutionNotifications:
             self._runs.clear()
             self._latest.clear()
             self._retired.clear()
+            self._handles.clear()

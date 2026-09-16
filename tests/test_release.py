@@ -117,12 +117,12 @@ def test_alpha_cli_stamps_file_and_failure_does_not_modify_it(tmp_path: Path, ta
     assert path.read_text(encoding="utf-8") == alpha
 
 
-def test_dependency_requires_the_attachment_core_line_and_caps_the_next_minor() -> None:
+def test_dependency_requires_the_channel_approval_core_line_and_caps_the_next_minor() -> None:
     project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
     dependencies = tomllib.loads(project_file.read_text(encoding="utf-8"))["project"]["dependencies"]
     core = next(Requirement(value) for value in dependencies if Requirement(value).name == "nagents")
-    assert Version("0.9.0") in core.specifier
-    assert Version("0.9.7") in core.specifier
-    assert Version("0.8.9") not in core.specifier
+    assert Version("0.10.0") in core.specifier
+    assert Version("0.10.7") in core.specifier
+    assert Version("0.9.7") not in core.specifier
     assert Version("0.6.0a24202") not in core.specifier
-    assert Version("0.10.0") not in core.specifier
+    assert Version("0.11.0") not in core.specifier

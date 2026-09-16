@@ -80,6 +80,14 @@ plugin = ChannelPlugin(
                 ),
                 "default": False,
             },
+            "chat_approvals": {
+                "type": "boolean",
+                "description": (
+                    "Render Approve/Deny buttons on approval prompts and return the tap as a decision. Requires "
+                    "the host connection's chat_approvals policy; host must authorize the owning chat."
+                ),
+                "default": False,
+            },
         },
         "additionalProperties": False,
     },

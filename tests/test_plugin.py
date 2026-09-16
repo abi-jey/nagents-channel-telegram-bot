@@ -38,6 +38,7 @@ def test_descriptor_entry_point_exposes_flat_secret_aware_schema(monkeypatch: py
         "allowed_usernames",
         "private_chats_only",
         "execution_notifications",
+        "chat_approvals",
         "poll_timeout",
     }
     token_schema = properties["token"]

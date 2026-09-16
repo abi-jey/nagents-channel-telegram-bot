@@ -13,6 +13,7 @@ from typing import Self
 from nagents.channels import Channel
 from nagents.channels import ChannelAction
 from nagents.channels import ChannelActivity
+from nagents.channels import ChannelApproval
 from nagents.channels import ChannelAttachment
 from nagents.channels import ChannelCommand
 from nagents.channels import ChannelDelivery
@@ -60,7 +61,7 @@ class TelegramBot(Channel):
     """
 
     description = "Telegram bot: receive chat events; explicitly send, edit, or delete plain-text messages."
-    capabilities = ("receive", "send_text", "send_files", "commands", "typing", "fetch_attachment")
+    capabilities = ("receive", "send_text", "send_files", "commands", "typing", "fetch_attachment", "approvals")
     actions = (
         ChannelAction(
             name="edit_message",
@@ -101,6 +102,7 @@ class TelegramBot(Channel):
         allowed_usernames: Sequence[str] = (),
         private_chats_only: bool = False,
         execution_notifications: bool = False,
+        chat_approvals: bool = False,
         poll_timeout: int = 30,
         base_url: str = "https://api.telegram.org",
     ) -> None:
@@ -118,6 +120,8 @@ class TelegramBot(Channel):
             raise ChannelError("private_chats_only must be a boolean")
         if type(execution_notifications) is not bool:
             raise ChannelError("execution_notifications must be a boolean")
+        if type(chat_approvals) is not bool:
+            raise ChannelError("chat_approvals must be a boolean")
         if type(poll_timeout) is not int or not 1 <= poll_timeout <= 50:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
         self.name = name
@@ -131,7 +135,8 @@ class TelegramBot(Channel):
         self._transport = Transport(token, base_origin(base_url))
         self._typing = Typing(self._transport)
         self._execution_notifications = execution_notifications
-        self._execution = ExecutionNotifications(self._transport, self._typing, token)
+        self._chat_approvals = chat_approvals
+        self._execution = ExecutionNotifications(self._transport, self._typing, token, approvals=chat_approvals)
         self._lifecycle_lock = asyncio.Lock()
         self._bot_id = 0
         self._bot_username = ""
@@ -153,6 +158,7 @@ class TelegramBot(Channel):
             "allowed_usernames",
             "private_chats_only",
             "execution_notifications",
+            "chat_approvals",
             "poll_timeout",
         }
         if not isinstance(config, dict) or set(config) - keys:
@@ -174,6 +180,7 @@ class TelegramBot(Channel):
         usernames = config.get("allowed_usernames", [])
         private = config.get("private_chats_only", False)
         notifications = config.get("execution_notifications", False)
+        approvals = config.get("chat_approvals", False)
         timeout = config.get("poll_timeout", 30)
         if not isinstance(name, str):
             raise ChannelError("name must be a string")
@@ -190,6 +197,8 @@ class TelegramBot(Channel):
             raise ChannelError("private_chats_only must be a boolean")
         if type(notifications) is not bool:
             raise ChannelError("execution_notifications must be a boolean")
+        if type(approvals) is not bool:
+            raise ChannelError("chat_approvals must be a boolean")
         if type(timeout) is not int:
             raise ChannelError("poll_timeout must be an integer from 1 to 50")
         return cls(
@@ -200,6 +209,7 @@ class TelegramBot(Channel):
             allowed_usernames=user_names,
             private_chats_only=private,
             execution_notifications=notifications,
+            chat_approvals=approvals,
             poll_timeout=timeout,
         )
 
@@ -241,6 +251,22 @@ class TelegramBot(Channel):
     def command(self, message: ChannelMessage) -> ChannelCommand | None:
         """Recognize an explicit new-message command; the host owns its execution."""
         return parse_command(message, self._bot_username)
+
+    def approval(self, message: ChannelMessage) -> ChannelApproval | None:
+        """Resolve an inline Approve/Deny tap into a host-validated decision.
+
+        Only active when ``chat_approvals`` rendered button prompts. A tap that is
+        recognized but no longer matches a live prompt returns an empty decision,
+        which the host consumes without enqueuing model input.
+        """
+        if not self._chat_approvals or not self._opened or self._closing:
+            return None
+        try:
+            return self._execution.approval(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
 
     async def activity(self, event: ChannelActivity) -> None:
         """Best-effort typing, with local stop and session-scoped ownership."""
