@@ -5,7 +5,7 @@ import re
 from nagents.channels import ChannelCommand
 from nagents.channels import ChannelMessage
 
-_COMMAND = re.compile(r"\A/(sessions|session|new)(?:@([A-Za-z0-9_]{1,32}))?(?=$|[ \t\r\n])")
+_COMMAND = re.compile(r"\A/(sessions|session|new|compact)(?:@([A-Za-z0-9_]{1,32}))?(?=$|[ \t\r\n])")
 _FORWARD_FIELDS = ("forward_origin", "forward_date", "forward_from", "forward_from_chat", "forward_sender_name")
 
 
@@ -55,6 +55,6 @@ def parse_command(message: ChannelMessage, username: str) -> ChannelCommand | No
     # If entities are absent entirely, accept only the same strict literal token.
     # Present but empty/malformed/mismatching entities never trigger this fallback.
     arguments = message.text[match.end() :].strip()
-    if name == "sessions" and arguments:
+    if name in {"sessions", "compact"} and arguments:
         return None
     return ChannelCommand(name=name, arguments=arguments)

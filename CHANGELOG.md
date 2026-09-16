@@ -2,6 +2,9 @@
 
 ## 0.1.0
 
+- Recognize `/compact` as a host command so the host can compact the chat's bound
+  session and report the result. Only the bare token is a command; `/compact`
+  with arguments stays ordinary model input, matching `/sessions`.
 - Replace run lifecycle chat messages with the existing typing indicator:
   `run_started`/`completed`/`failed`/`cancelled` no longer post text. Compact
   tool notices and the approval prompt remain the only rendered execution text.
