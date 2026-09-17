@@ -18,6 +18,7 @@ from nagents.channels import load_channel
 
 from nagents_channel_telegram_bot import TelegramBot
 from nagents_channel_telegram_bot._transport import Transport
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import TOKEN
 from .conftest import TelegramServer
@@ -183,7 +184,7 @@ async def test_cancelled_open_closes_owned_session(server: TelegramServer, monke
     server.responses["getMe"].append(blocked)
     bot = TelegramBot(TOKEN, base_url=server.origin)
     task = asyncio.create_task(bot.open())
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     with pytest.raises(ChannelError, match="already opening"):
         await bot.open()
     task.cancel()
@@ -230,7 +231,7 @@ async def test_retry_sleep_cancellable(server: TelegramServer, monkeypatch: pyte
     server.responses["getMe"].append(failure(429, delay=60))
     bot = TelegramBot(TOKEN, base_url=server.origin)
     task = asyncio.create_task(bot.open())
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

@@ -22,6 +22,7 @@ from nagents_channel_telegram_bot import _execution
 from nagents_channel_telegram_bot import plugin
 from nagents_channel_telegram_bot._execution import tool_text
 from nagents_channel_telegram_bot._transport import Transport
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import BOT_ID
 from .conftest import TOKEN
@@ -414,7 +415,7 @@ async def test_close_joins_inflight_hook_and_terminal_cancellation_cleans_typing
     fake.exited.clear()
     fake.block = True
     task = asyncio.create_task(bot.on_event(event("tool_requested")))
-    await asyncio.wait_for(fake.entered.wait(), 2)
+    await asyncio.wait_for(fake.entered.wait(), HANG_GUARD)
     assert bot._typing._entries
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -436,7 +437,7 @@ async def test_close_waits_for_inflight_event_before_releasing_transport(
     await bot.on_event(event("run_started"))
     fake.block = True
     producer = asyncio.create_task(bot.on_event(event("tool_requested")))
-    await asyncio.wait_for(fake.entered.wait(), 2)
+    await asyncio.wait_for(fake.entered.wait(), HANG_GUARD)
     closing = asyncio.create_task(bot.close())
     await asyncio.sleep(0)
     closing.cancel()

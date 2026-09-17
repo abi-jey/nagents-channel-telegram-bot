@@ -15,6 +15,7 @@ from nagents.channels import ChannelValue
 from nagents_channel_telegram_bot import TelegramBot
 from nagents_channel_telegram_bot._validation import json_value
 from nagents_channel_telegram_bot._validation import object_value
+from tests.hang_guard import HANG_GUARD
 
 TOKEN = "123456:OFFLINE_TEST_TOKEN"
 BOT_ID = 123456
@@ -122,7 +123,7 @@ class TelegramServer:
         return [payload for name, payload in self.requests if name == method]
 
     async def next_poll(self) -> dict[str, ChannelValue]:
-        return await asyncio.wait_for(self.polls.get(), timeout=2)
+        return await asyncio.wait_for(self.polls.get(), HANG_GUARD)
 
 
 @pytest.fixture

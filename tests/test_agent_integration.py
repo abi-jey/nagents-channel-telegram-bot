@@ -15,6 +15,7 @@ from nagents.types import Message
 from nagents.types import ToolCall
 
 from nagents_channel_telegram_bot import TelegramBot
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import TOKEN
 from .conftest import TelegramServer
@@ -109,7 +110,7 @@ async def test_shared_agent_session_local_final_and_durable_restart_dedup(
             assert (await server.next_poll())["offset"] == 0
             assert (await server.next_poll())["offset"] == 102
             if not restart:
-                await asyncio.wait_for(finished.wait(), timeout=2)
+                await asyncio.wait_for(finished.wait(), HANG_GUARD)
         finally:
             try:
                 await cancel(task)
@@ -179,7 +180,7 @@ async def test_user_private_filters_gate_real_agent_inbox_and_model_execution(
     try:
         assert (await server.next_poll())["offset"] == 0
         assert (await server.next_poll())["offset"] == 106
-        await asyncio.wait_for(finished.wait(), timeout=2)
+        await asyncio.wait_for(finished.wait(), HANG_GUARD)
         assert {event.message_id for event in observed} == {"103", "104", "105"}
         assert {envelope["message_id"] for envelope in envelopes} == {"103", "104", "105"}
         assert [envelope["conversation_id"] for envelope in envelopes] == ["7", "9", "7"]

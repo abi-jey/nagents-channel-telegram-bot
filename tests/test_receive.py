@@ -7,6 +7,7 @@ from nagents.channels import ChannelMessage
 from nagents.channels import ChannelValue
 
 from nagents_channel_telegram_bot import TelegramBot
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import BOT_ID
 from .conftest import TOKEN
@@ -38,7 +39,7 @@ async def test_durable_admission_backpressure_and_duplicate_offsets(bot: Telegra
     task = asyncio.create_task(bot.listen(receive))
     try:
         first = await server.next_poll()
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), HANG_GUARD)
         assert first == {
             "offset": 0,
             "limit": 20,
@@ -98,7 +99,7 @@ async def test_cancelled_admission_leaves_current_event_pending(bot: TelegramBot
 
     task = asyncio.create_task(bot.listen(blocked))
     await server.next_poll()
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     await cancel(task)
     seen: list[str] = []
 
@@ -336,7 +337,7 @@ async def test_transient_outage_is_survived(
 
     task = asyncio.create_task(bot.listen(receive))
     try:
-        await asyncio.wait_for(delivered.wait(), 2)
+        await asyncio.wait_for(delivered.wait(), HANG_GUARD)
         assert accepted == ["101"]
         assert retry_delays == [1, 2, 4]
         assert poll_delays == [1]
@@ -356,7 +357,7 @@ async def test_repeated_outages_back_off_to_the_cap(
 
     task = asyncio.create_task(bot.listen(receive))
     try:
-        await asyncio.wait_for(delivered.wait(), 2)
+        await asyncio.wait_for(delivered.wait(), HANG_GUARD)
         assert retry_delays == [1, 2, 4] * 8
         assert poll_delays == [1, 2, 4, 8, 16, 32, 60, 60]
     finally:
@@ -431,7 +432,7 @@ async def test_callback_cancellation_does_not_ack_update(bot: TelegramBot, serve
 
     task = asyncio.create_task(bot.listen(receive))
     await server.next_poll()
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     await cancel(task)
     task = asyncio.create_task(bot.listen(receive))
     try:
