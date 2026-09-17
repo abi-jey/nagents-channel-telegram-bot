@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+Track the Nagents 0.11 line: require `nagents>=0.11.0,<0.12`. No connector code
+changes; the Channel and execution-hook APIs it uses are unchanged, and the
+suite passes against Nagents 0.11.0.
+
 ## 0.1.1
 
 First stable release. It packages the 0.1.0 alpha line unchanged, including the
