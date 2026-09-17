@@ -14,6 +14,7 @@ from nagents.channels import ChannelValue
 from nagents_channel_telegram_bot import TelegramBot
 from nagents_channel_telegram_bot._activity import MAX_TYPING_TARGETS
 from nagents_channel_telegram_bot._transport import Transport
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import TOKEN
 from .conftest import TelegramServer
@@ -50,7 +51,7 @@ class Clock:
             raise
 
     async def next_sleep(self) -> SleepGate:
-        return await asyncio.wait_for(self.waits.get(), timeout=2)
+        return await asyncio.wait_for(self.waits.get(), HANG_GUARD)
 
     def advance(self, gate: SleepGate) -> None:
         self.now += gate.delay
@@ -234,9 +235,9 @@ async def test_stop_cancels_inflight_first_indicator(bot: TelegramBot, server: T
     server.responses["sendChatAction"].append(blocked)
     event = ChannelActivity("-100", True, session_id="run")
     start = asyncio.create_task(bot.activity(event))
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     await bot.activity(replace(event, active=False))
-    await asyncio.wait_for(start, 2)
+    await asyncio.wait_for(start, HANG_GUARD)
     assert bot._typing._entries == {}
     assert len(server.calls("sendChatAction")) == 1
 
@@ -251,7 +252,7 @@ async def test_cancelled_start_cleans_its_owned_indicator(bot: TelegramBot, serv
 
     server.responses["sendChatAction"].append(blocked)
     start = asyncio.create_task(bot.activity(ChannelActivity("-100", True)))
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     await cancel(start)
     assert bot._typing._entries == {}
 
@@ -270,13 +271,13 @@ async def test_cancelling_duplicate_start_does_not_cancel_original(
     server.responses["sendChatAction"].append(blocked)
     event = ChannelActivity("-100", True)
     original = asyncio.create_task(bot.activity(event))
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     duplicate = asyncio.create_task(bot.activity(event))
     await asyncio.sleep(0)
     await cancel(duplicate)
     assert len(bot._typing._entries) == 1
     release.set()
-    await asyncio.wait_for(original, 2)
+    await asyncio.wait_for(original, HANG_GUARD)
     assert (await clock.next_sleep()).delay == 4
     assert len(server.calls("sendChatAction")) == 1
 
@@ -299,7 +300,7 @@ async def test_close_shields_cleanup_and_blocks_activity_during_shutdown(
 
     monkeypatch.setattr(Transport, "close", delayed)
     closing = asyncio.create_task(bot.close())
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     assert wait.cancelled.is_set()
     await bot.activity(ChannelActivity("200", True))
     with pytest.raises(ChannelError, match="closing"):
@@ -327,12 +328,12 @@ async def test_close_during_session_handoff_cannot_spawn_a_new_worker(
     old_wait = await clock.next_sleep()
     old_wait.allow_cancel.clear()
     handoff = asyncio.create_task(bot.activity(ChannelActivity("-100", True, session_id="new")))
-    await asyncio.wait_for(old_wait.cancelled.wait(), 2)
+    await asyncio.wait_for(old_wait.cancelled.wait(), HANG_GUARD)
     closing = asyncio.create_task(bot.close())
     await asyncio.sleep(0)
     await bot.activity(ChannelActivity("200", True))
     old_wait.allow_cancel.set()
-    await asyncio.wait_for(asyncio.gather(handoff, closing), 2)
+    await asyncio.wait_for(asyncio.gather(handoff, closing), HANG_GUARD)
     assert bot._typing._entries == {}
     assert len(server.calls("sendChatAction")) == 1
     assert bot._transport._session is None
@@ -367,7 +368,7 @@ async def test_close_during_open_prevents_activity_and_drains_session(server: Te
     server.responses["getMe"].append(blocked)
     bot = TelegramBot(TOKEN, base_url=server.origin)
     opening = asyncio.create_task(bot.open())
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     session = bot._transport._session
     assert session is not None
     closing = asyncio.create_task(bot.close())
@@ -376,7 +377,7 @@ async def test_close_during_open_prevents_activity_and_drains_session(server: Te
     release.set()
     with pytest.raises(ChannelError, match="closing"):
         await opening
-    await asyncio.wait_for(closing, 2)
+    await asyncio.wait_for(closing, HANG_GUARD)
     assert session.closed and bot._typing._entries == {}
     assert server.calls("sendChatAction") == []
     await bot.open()
@@ -399,7 +400,7 @@ async def test_failed_open_cleanup_survives_repeated_cancellation(
     server.responses["getMe"].append(failure(401))
     bot = TelegramBot(TOKEN, base_url=server.origin)
     opening = asyncio.create_task(bot.open())
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     session = bot._transport._session
     assert session is not None
     opening.cancel()

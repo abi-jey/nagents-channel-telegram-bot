@@ -11,6 +11,7 @@ from nagents.channels import ChannelSend
 from nagents.channels import ChannelValue
 
 from nagents_channel_telegram_bot import TelegramBot
+from tests.hang_guard import HANG_GUARD
 
 from .conftest import TOKEN
 from .conftest import TelegramServer
@@ -195,7 +196,7 @@ async def test_outbound_cancellation_not_retried(bot: TelegramBot, server: Teleg
 
     server.responses["sendMessage"].append(blocked)
     task = asyncio.create_task(bot.send(ChannelSend("-100", "hello")))
-    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(entered.wait(), HANG_GUARD)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

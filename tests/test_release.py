@@ -121,8 +121,9 @@ def test_dependency_requires_the_channel_approval_core_line_and_caps_the_next_mi
     project_file = Path(__file__).resolve().parents[1] / "pyproject.toml"
     dependencies = tomllib.loads(project_file.read_text(encoding="utf-8"))["project"]["dependencies"]
     core = next(Requirement(value) for value in dependencies if Requirement(value).name == "nagents")
-    assert Version("0.10.0") in core.specifier
-    assert Version("0.10.7") in core.specifier
+    assert Version("0.11.0") in core.specifier
+    assert Version("0.11.7") in core.specifier
+    assert Version("0.10.3") not in core.specifier
     assert Version("0.9.7") not in core.specifier
     assert Version("0.6.0a24202") not in core.specifier
-    assert Version("0.11.0") not in core.specifier
+    assert Version("0.12.0") not in core.specifier
