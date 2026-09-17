@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+First stable release. It packages the 0.1.0 alpha line unchanged, including the
+typing-only execution notices, opt-in inline `chat_approvals`, outbound and
+inbound attachments, and `/compact` host-command recognition. See the 0.1.0
+entries below for details.
+
 ## 0.1.0
 
 - Recognize `/compact` as a host command so the host can compact the chat's bound

@@ -650,7 +650,7 @@ Before a Nagents release is published, maintainers testing against a local check
 the frozen Channel contracts can install that checkout and this package with
 `python -m pip install --no-deps -e <path>` for each, then install the development
 tools separately. This is a local verification override; released dependency
-metadata retains its published minimum, `nagents>=0.8.0,<0.9`.
+metadata retains its published minimum, `nagents>=0.10.0,<0.11`.
 
 ### Draft PR milestones and feature-branch alphas
 
